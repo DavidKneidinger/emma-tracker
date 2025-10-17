@@ -63,13 +63,13 @@ def detect_mcs_in_file(
     lifting_index_regions = np.ones_like(precipitation, dtype=np.int32) * lifting_index_threshold
 
     # Step 1: Smooth the precipitation field
-    precipitation_smooth = smooth_precipitation_field(precipitation, kernel_size=2)
+    precipitation_smooth = smooth_precipitation_field(precipitation)
 
     # Step 2: Detect heavy precipitation cores with connected component labeling
     core_labels = detect_cores_connected(
-        precipitation,
+        precipitation_smooth,
         core_thresh=heavy_precip_threshold,
-        min_cluster_size=3,  # Min number of points in a cluster
+        min_cluster_size=4,  # Min number of points in a cluster
     )
 
     # Step 3: Morphological expansion with merging
