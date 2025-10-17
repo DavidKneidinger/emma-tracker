@@ -1,28 +1,32 @@
 import numpy as np
 import logging
 from collections import defaultdict
-from scipy.signal import fftconvolve
 from scipy.ndimage import (
     binary_dilation,
     generate_binary_structure,
+    gaussian_filter
 )
 from skimage.measure import label as connected_label
 
 
-def smooth_precipitation_field(precipitation, kernel_size=2):
+def smooth_precipitation_field(precipitation: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     """
-    Apply simple box filter using FFT convolution with a kernel_size x kernel_size box to the precipitation field.
+    Apply a Gaussian filter to smooth a 2D field.
+
+    This method uses a Gaussian kernel for smoothing, which is generally
+    preferred for scientific applications over a simple box filter as it
+    provides isotropic (radially symmetric) smoothing and avoids introducing
+    high-frequency artifacts.
 
     Parameters:
-    - precipitation: 2D array of precipitation values.
-    - kernel_size: Size of the box filter kernel.
+    - precipitation (np.ndarray): 2D array of precipitation values.
+    - sigma (float): The standard deviation for the Gaussian kernel, given in
+      units of grid cells. A larger sigma results in more smoothing.
 
     Returns:
-    - Smoothed precipitation field as a 2D array.
+    - np.ndarray: The smoothed precipitation field as a 2D array.
     """
-    kernel = np.ones((kernel_size, kernel_size), dtype=float)
-    kernel /= kernel.sum()
-    return fftconvolve(precipitation, kernel, mode="same")
+    return gaussian_filter(precipitation, sigma=sigma, mode='reflect')
 
 
 def detect_cores_connected(precipitation, core_thresh=10.0, min_cluster_size=3):
