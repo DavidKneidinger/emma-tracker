@@ -32,9 +32,6 @@ def _haversine_vec(lat1_deg, lon1_deg, lat2_deg, lon2_deg):
     
     return R_EARTH_KM * c
 
-# =============================================================================
-# The New "Smart" Area Calculation Function
-# =============================================================================
 
 def calculate_grid_area_map(detection_result):
     """
@@ -406,7 +403,7 @@ def handle_continuation(
     mcs_lifetime,
     lifetime_dict,
     max_area_dict,
-    grid_cell_area_km2,
+    grid_area_map_km2,
 ):
     """
     Continues an existing old_track_id for the new_label cluster.
@@ -419,11 +416,10 @@ def handle_continuation(
         mcs_lifetime (numpy.ndarray): 2D array for per-pixel lifetime.
         lifetime_dict (dict): Tracks how many timesteps each track ID has existed.
         max_area_dict (dict): Track ID -> maximum area encountered.
-        grid_cell_area_km2 (float): Factor to convert pixel count to km².
+        grid_area_map_km2 (np.ndarray): 2D array of grid cell areas (km²).
     """
     mask = final_labeled_regions == new_label
-    area_pixels = np.sum(mask)
-    area_km2 = area_pixels * grid_cell_area_km2
+    area_km2 = np.sum(grid_area_map_km2[mask])
 
     mcs_id[mask] = old_track_id
     lifetime_dict[old_track_id] += 1
