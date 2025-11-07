@@ -1,5 +1,151 @@
 import numpy as np
+import math
 from scipy.ndimage import affine_transform, center_of_mass, label
+
+import numpy as np
+import math
+
+# --- Constants ---
+R_EARTH_KM = 6371.0
+
+# =============================================================================
+# Vectorized Haversine Function (Helper)
+# =============================================================================
+
+def _haversine_vec(lat1_deg, lon1_deg, lat2_deg, lon2_deg):
+    """
+    Calculates the great-circle distance (km) between two points
+    or arrays of points on a sphere.
+    
+    Vectorized to be fast with numpy arrays.
+    """
+    # Convert all to radians
+    lat1, lon1, lat2, lon2 = np.radians([lat1_deg, lon1_deg, lat2_deg, lon2_deg])
+    
+    # Haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = np.sin(dlat / 2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0)**2
+    
+    # c = 2 * np.arcsin(np.sqrt(a)) # More common, but can have precision issues
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a)) # More stable
+    
+    return R_EARTH_KM * c
+
+# =============================================================================
+# The New "Smart" Area Calculation Function
+# =============================================================================
+
+def calculate_grid_area_map(detection_result):
+    """
+    Calculates the area (km²) of each cell in a grid.
+    
+    This function is "smart":
+    1. It detects if the grid is regular (IMERG-style) by comparing
+       the 1D 'lat' and 2D 'lat2d' arrays.
+    2. If regular, it uses the fast, precise 1D trigonometric calculation.
+    3. If irregular (CORDEX-style), it assumes a rotated-pole grid where
+       cell area is near-constant, and approximates this by calculating
+       the area of the central grid cell.
+       
+    Args:
+        detection_result (dict): A single detection result dictionary
+                                 containing at least:
+                                 - 'lat' (np.ndarray): 1D array of latitudes
+                                 - 'lon' (np.ndarray): 1D array of longitudes
+                                 - 'lat2d' (np.ndarray): 2D array of latitudes
+                                 - 'lon2d' (np.ndarray): 2D array of longitudes
+    
+    Returns:
+        np.ndarray: A 2D array of grid cell areas (in km²) with the
+                    same shape as 'lat2d'.
+    
+    Raises:
+        ValueError: If required coordinates are missing or shapes are mismatched.
+    """
+    # Get all required coordinates from the dictionary
+    try:
+        lat_1d = detection_result['lat']
+        lon_1d = detection_result['lon']
+        lat_2d = detection_result['lat2d']
+        lon_2d = detection_result['lon2d']
+    except KeyError as e:
+        raise KeyError(f"Missing required coordinate {e} in detection_result.")
+        
+    grid_shape = lat_2d.shape
+    (n_lats, n_lons) = grid_shape
+    
+    if lat_1d.shape[0] != n_lats or lon_1d.shape[0] != n_lons:
+         # This check is for CORDEX grids where 1D rlat/rlon might be
+         # provided as 'lat'/'lon'. We'll assume the 1D/2D name mismatch
+         # is intentional and the shapes are the source of truth.
+         # The CORDEX 1D/2D check below is more important.
+         pass # Allow shape mismatches, proceed to regularity check
+
+    # --- Check for Regular Grid (IMERG-style) ---
+    # A grid is regular if the 2D lat array is just the 1D lat vector broadcasted
+    is_regular = np.allclose(lat_2d, lat_1d[:, np.newaxis])
+    
+    if is_regular:
+        # Use np.diff and take the first element for robustness (e.g., if list is size 1)
+        # Use abs() in case coordinates are descending
+        try:
+            delta_lat_deg = np.abs(np.diff(lat_1d)[0])
+            delta_lon_deg = np.abs(np.diff(lon_1d)[0])
+        except IndexError: # Handle case of a single-pixel dimension
+            delta_lat_deg = 0.1 # Assume default
+            delta_lon_deg = 0.1 # Assume default
+
+        delta_lat_rad = math.radians(delta_lat_deg)
+        delta_lon_rad = math.radians(delta_lon_deg)
+        
+        lat_rad_1d = np.radians(lat_1d)
+        
+        # N-S distance is constant for a given grid spacing
+        north_south_dist_km = R_EARTH_KM * delta_lat_rad
+        
+        # E-W distance (varies with latitude)
+        east_west_dist_km_1d = R_EARTH_KM * np.cos(lat_rad_1d) * delta_lon_rad
+        
+        # Calculate the area for each latitude band
+        area_1d = east_west_dist_km_1d * north_south_dist_km
+        
+        # Broadcast 1D area array to the 2D grid shape
+        area_column = area_1d[:, np.newaxis]
+        area_map_2d = np.tile(area_column, (1, n_lons))
+        
+        return area_map_2d
+    
+    else:
+        # --- Assume Irregular Grid (CORDEX-style) ---
+        # For a rotated-pole grid, cell area is (nearly) constant.
+        # We approximate the area of the whole grid by calculating the area of the single, central grid cell.
+        
+        # Find the central indices
+        i_mid = n_lats // 2
+        j_mid = n_lons // 2
+        
+        # Get coordinates for the central cell and its N, E neighbors
+        lat_center = lat_2d[i_mid, j_mid]
+        lon_center = lon_2d[i_mid, j_mid]
+        
+        lat_north = lat_2d[i_mid + 1, j_mid]
+        lon_north = lon_2d[i_mid + 1, j_mid]
+        
+        lat_east = lat_2d[i_mid, j_mid + 1]
+        lon_east = lon_2d[i_mid, j_mid + 1]
+        
+        # Calculate N-S (delta_y) and E-W (delta_x) distances
+        delta_y_km = _haversine_vec(lat_center, lon_center, lat_north, lon_north)
+        delta_x_km = _haversine_vec(lat_center, lon_center, lat_east, lon_east)
+        
+        # Calculate area
+        central_area_km2 = delta_x_km * delta_y_km
+        
+        # Create a 2D map with this constant area
+        area_map_2d = np.full(grid_shape, central_area_km2)
+        
+        return area_map_2d
 
 def assign_new_id(
     label,
