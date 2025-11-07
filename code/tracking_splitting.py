@@ -26,7 +26,7 @@ def handle_splitting(
     mcs_lifetime,
     lifetime_dict,
     max_area_dict,
-    grid_cell_area_km2,
+    grid_area_map_km2,
     nmaxsplit=5,
 ):
     """
@@ -43,7 +43,7 @@ def handle_splitting(
         mcs_lifetime (numpy.ndarray): 2D array for track lifetimes.
         lifetime_dict (dict): Maps track ID -> number of timesteps.
         max_area_dict (dict): Maps track ID -> max area encountered.
-        grid_cell_area_km2 (float): Factor for pixel area.
+        grid_area_map_km2 (np.ndarray): 2D array of grid cell areas (km²).
         nmaxsplit (int, optional): Max number of splits in a single event. Defaults to 5.
 
     Returns:
@@ -55,8 +55,7 @@ def handle_splitting(
     new_label_areas = []
     for nlbl in new_label_list:
         mask = final_labeled_regions == nlbl
-        area_pix = np.sum(mask)
-        new_label_areas.append(area_pix * grid_cell_area_km2)
+        new_label_areas.append(np.sum(grid_area_map_km2[mask]))
 
     idx_sorted = sorted(
         range(len(new_label_list)), key=lambda i: new_label_areas[i], reverse=True

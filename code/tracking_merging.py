@@ -23,7 +23,7 @@ def handle_merging(
     final_labeled_regions,
     current_time,
     max_area_dict,
-    grid_cell_area_km2,
+    grid_area_map_km2,
     nmaxmerge=5,
 ):
     """
@@ -36,7 +36,7 @@ def handle_merging(
         final_labeled_regions (numpy.ndarray): Current labeled regions.
         current_time (datetime.datetime): Timestamp for the merging event.
         max_area_dict (dict): Maps track ID -> max area encountered.
-        grid_cell_area_km2 (float): Factor to convert pixel count to km².
+        grid_area_map_km2 (np.ndarray): 2D array of grid cell areas (km²).
         nmaxmerge (int, optional): Max number of merges recorded. Defaults to 5.
 
     Returns:
@@ -52,8 +52,7 @@ def handle_merging(
 
     if merging_events is not None and len(old_track_ids) > 1:
         mask = final_labeled_regions == new_label
-        area_pix = np.sum(mask)
-        child_area = area_pix * grid_cell_area_km2
+        child_area = np.sum(grid_area_map_km2[mask])
         parent_areas = [max_area_dict[pid] for pid in old_track_ids]
         mevt = MergingEvent(
             time=current_time,
