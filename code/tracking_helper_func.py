@@ -358,7 +358,7 @@ def handle_no_overlap(
     max_area_dict,
     mcs_id,
     mcs_lifetime,
-    grid_cell_area_km2,
+    grid_area_map_km2,
 ):
     """
     Assigns brand-new track IDs to all new labels that found no overlap with previous clusters.
@@ -371,7 +371,7 @@ def handle_no_overlap(
         max_area_dict (dict): Track ID -> max area encountered.
         mcs_id (numpy.ndarray): 2D array for per-pixel track IDs.
         mcs_lifetime (numpy.ndarray): 2D array for per-pixel lifetime values.
-        grid_cell_area_km2 (float): Multiplicative factor to get area (km²).
+        grid_area_map_km2 (np.ndarray): 2D array of grid cell areas (km²).
 
     Returns:
         assigned_ids_map (dict): new_label -> assigned track ID
@@ -381,8 +381,7 @@ def handle_no_overlap(
 
     for lbl in new_labels_no_overlap:
         mask = final_labeled_regions == lbl
-        area_pixels = np.sum(mask)
-        area_km2 = area_pixels * grid_cell_area_km2
+        area_km2 = np.sum(grid_area_map_km2[mask])
 
         mcs_id[mask] = next_cluster_id
         lifetime_dict[next_cluster_id] = 1
