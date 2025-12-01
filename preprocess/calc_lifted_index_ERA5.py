@@ -230,10 +230,10 @@ def parse_arguments():
         help="Directory to store (or load from) the xesmf remapping weights file.",
     )
     parser.add_argument(
-        "--start_year", type=int, default=1998, help="The first year to process."
+        "--start_year", type=int, default=2000, help="The first year to process."
     )
     parser.add_argument(
-        "--end_year", type=int, default=1999, help="The last year to process."
+        "--end_year", type=int, default=2024, help="The last year to process."
     )
     parser.add_argument(
         "--num_cores",
