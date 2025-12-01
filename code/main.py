@@ -20,6 +20,7 @@ from input_output import (
     load_individual_detection_files,
     save_tracking_result,
 )
+from postprocessing import run_postprocessing_year
 
 # Set a global exception handler to log uncaught exceptions
 sys.excepthook = handle_exception
@@ -92,7 +93,8 @@ def main():
     precip_data_dir = config["precip_data_directory"]
     file_suffix = config["file_suffix"]
     detection_output_path = config["detection_output_path"]
-    tracking_output_dir = config["tracking_output_dir"]
+    raw_tracking_output_dir = config["raw_tracking_output_dir"]  # raw tracking output
+    tracking_output_dir = config["tracking_output_dir"]  # final filtered tracking output
     precip_data_var = config["precip_var_name"]
     lat_name = config["lat_name"]
     lon_name = config["lon_name"]
@@ -115,14 +117,15 @@ def main():
     nmaxmerge = config["nmaxmerge"]
 
     # Operational parameters
-    USE_MULTIPROCESSING = config["use_multiprocessing"]
-    NUMBER_OF_CORES = config["number_of_cores"]
-    DO_DETECTION = config["detection"]
-    USE_LIFTED_INDEX = config["use_lifted_index"]
+    USE_MULTIPROCESSING = config["use_multiprocessing", False]
+    NUMBER_OF_CORES = config["number_of_cores", 1]
+    DO_DETECTION = config["detection", True]
+    USE_LIFTED_INDEX = config["use_lifted_index", True]
+    RUN_POSTPROCESSING = config.get("run_postprocessing", True)
 
     # Setup logging and create output directories
     os.makedirs(detection_output_path, exist_ok=True)
-    os.makedirs(tracking_output_dir, exist_ok=True)
+    os.makedirs(raw_tracking_output_dir, exist_ok=True)
 
     if DO_DETECTION:
         # Start with a fresh detection log, overwriting any from a previous run.
@@ -130,7 +133,7 @@ def main():
         logger.info("Logging initialized for DETECTION phase.")
     else:
         # If skipping detection, start directly with a fresh tracking log.
-        setup_logging(tracking_output_dir, filename="tracking.log", mode="w")
+        setup_logging(raw_tracking_output_dir, filename="tracking.log", mode="w")
         logger.info("Logging initialized for TRACKING phase.")
 
     # --- 2. FIND, FILTER, AND GROUP INPUT FILES ---
@@ -260,7 +263,7 @@ def main():
 
             if not logging_switched_to_tracking:
                 # Use mode 'w' to create a fresh tracking log
-                setup_logging(tracking_output_dir, filename="tracking.log", mode="w")
+                setup_logging(raw_tracking_output_dir, filename="tracking.log", mode="w")
                 logger.info(
                     "Log file switched to tracking phase for all subsequent years."
                 )
@@ -333,11 +336,26 @@ def main():
                 "tracking_centers": tracking_centers_list[i],
             }
             save_tracking_result(
-                tracking_data_for_timestep, tracking_output_dir, data_source
+                tracking_data_for_timestep, raw_tracking_output_dir, data_source
             )
 
-        logger.info(f"--- Finished processing for year: {year} ---")
-        print(f"--- Finished processing for year: {year} ---")
+        logger.info(f"--- Finished tracking for year: {year} ---")
+        print(f"--- Finished tracking for year: {year} ---")
+
+    # --- 3e. POST-PROCESSING PHASE ---
+    if RUN_POSTPROCESSING:
+        try:
+            run_postprocessing_year(
+                year,
+                raw_tracking_output_dir,
+                tracking_output_dir,
+                config,
+                NUMBER_OF_CORES
+            )
+        except Exception as e:
+            logger.error(f"Post-processing failed for year {year}: {e}")
+
+    logger.info(f"--- Finished processing for year: {year} ---")
 
     logger.info("All processing completed successfully.")
     print("All processing completed successfully.")
