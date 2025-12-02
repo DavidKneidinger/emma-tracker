@@ -1,0 +1,30 @@
+data_source: Test data
+detection: true
+detection_output_path: /nas/home/dkn/Desktop/mcs-tracking/tests/data/output/detection
+file_suffix: .nc_test
+filtered_tracking_output_dir: /nas/home/dkn/Desktop/mcs-tracking/tests/data/output/tracking_filtered
+heavy_precip_threshold: 10.0
+lat_name: lat
+lifted_index_data_directory: /nas/home/dkn/Desktop/mcs-tracking/tests/data/input
+lifted_index_percentage_threshold: 0.2
+liting_index_var_name: li
+lon_name: lon
+main_area_thresh: 25000
+main_lifetime_thresh: 4
+min_nr_plumes: 1
+min_size_threshold: 10
+moderate_precip_threshold: 1.0
+months: []
+nmaxmerge: 5
+number_of_cores: 24
+postprocessing_filters:
+  lifted_index_threshold: 0.0
+  max_area_volatility: 120000.0
+  track_straightness_threshold: 0.4
+precip_data_directory: /nas/home/dkn/Desktop/mcs-tracking/tests/data/input
+precip_var_name: pr
+raw_tracking_output_dir: /nas/home/dkn/Desktop/mcs-tracking/tests/data/output/tracking_raw
+run_postprocessing: false
+use_lifted_index: true
+use_multiprocessing: false
+years: []

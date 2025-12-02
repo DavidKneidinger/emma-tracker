@@ -34,3 +34,15 @@ emma-tracker = "emma.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["emma"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # Ignore the skimage boolean deprecation (external library issue)
+    "ignore:.*np.bool8.*:DeprecationWarning",
+    
+    # Ignore the binary size change warning (environment issue, usually harmless)
+    "ignore:.*numpy.ndarray size changed.*:RuntimeWarning",
+    
+    # Ignore divide by zero in scipy measurements (handled internally by returning NaN)
+    "ignore:invalid value encountered in scalar divide:RuntimeWarning"
+]
