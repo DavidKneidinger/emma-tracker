@@ -416,6 +416,7 @@ def save_detection_result(detection_result, output_dir, data_source):
         "label_id": {"dtype": "int32"},
         "label_lat": {"dtype": "float32"},
         "label_lon": {"dtype": "float32"},
+        "crs": {"dtype": "int32"}
     }
 
     ds.to_netcdf(output_filepath, encoding=encoding)
@@ -703,6 +704,7 @@ def save_tracking_result(tracking_data_for_timestep, output_dir, data_source, co
         "active_track_id": {"dtype": "int32"},
         "active_track_lat": {"dtype": "float32"},
         "active_track_lon": {"dtype": "float32"},
+        "crs": {"dtype": "int32"}
     }
 
     # --- 7. SAVE ---

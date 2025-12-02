@@ -228,7 +228,7 @@ def apply_filter_to_files(raw_files, valid_ids, output_dir):
         "active_track_id": {"dtype": "int32"},
         "active_track_lat": float_encoding,
         "active_track_lon": float_encoding,
-        # Don't forget 'crs' if you added it!
+        "crs": {"dtype": "int32"}
     }
     
     for f in raw_files:
