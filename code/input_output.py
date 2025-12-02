@@ -523,7 +523,7 @@ def load_individual_detection_files(year_input_dir, use_li_filter):
     detection_results.sort(key=lambda x: x["time"])
     return detection_results
 
-def save_tracking_result(tracking_data_for_timestep, output_dir, data_source):
+def save_tracking_result(tracking_data_for_timestep, output_dir, data_source, config):
     """
     Saves a single timestep's tracking results to a compressed, CF-compliant NetCDF file.
 
@@ -546,6 +546,7 @@ def save_tracking_result(tracking_data_for_timestep, output_dir, data_source):
             - "tracking_centers" (dict): A mapping `{track_id: (lat, lon)}` for all active tracks.
         output_dir (str): The root directory where output subfolders will be created.
         data_source (str): A string describing the input source (e.g., "IMERG + ERA5" or "CORDEX-FPS").
+        config (dict): Dict that contains the full config.yaml file.
 
     Output File Structure:
         Dimensions:
@@ -687,6 +688,7 @@ def save_tracking_result(tracking_data_for_timestep, output_dir, data_source):
     ds["active_track_id"].attrs = {"long_name": "Active Track IDs", "description": "List of Track IDs present in this timestep."}
     ds["active_track_lat"].attrs = {"long_name": "Active Track Center Latitude", "units": "degrees_north"}
     ds["active_track_lon"].attrs = {"long_name": "Active Track Center Longitude", "units": "degrees_east"}
+    ds.attrs['run_configuration'] = json.dumps(config, default=str)
 
     # --- 6. DEFINE ENCODING (COMPRESSION) ---
     int_encoding = {"zlib": True, "complevel": 4, "shuffle": True, "_FillValue": 0, "dtype": "int32"}

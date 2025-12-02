@@ -336,28 +336,28 @@ def main():
                 "tracking_centers": tracking_centers_list[i],
             }
             save_tracking_result(
-                tracking_data_for_timestep, raw_tracking_output_dir, data_source
+                tracking_data_for_timestep, raw_tracking_output_dir, data_source, config
             )
 
         logger.info(f"--- Finished tracking for year: {year} ---")
         print(f"--- Finished tracking for year: {year} ---")
 
-    # --- 3e. POST-PROCESSING PHASE ---
-    if RUN_POSTPROCESSING:
-        try:
-            run_postprocessing_year(
-                year,
-                raw_tracking_output_dir,
-                tracking_output_dir,
-                config,
-                NUMBER_OF_CORES
-            )
-        except Exception as e:
-            logger.error(f"Post-processing failed for year {year}: {e}")
+        # --- 3e. POST-PROCESSING PHASE ---
+        if RUN_POSTPROCESSING:
+            try:
+                run_postprocessing_year(
+                    year,
+                    raw_tracking_output_dir,
+                    tracking_output_dir,
+                    config,
+                    NUMBER_OF_CORES
+                )
+            except Exception as e:
+                logger.error(f"Post-processing failed for year {year}: {e}")
 
-    logger.info(f"--- Finished processing for year: {year} ---")
+        logger.info(f"--- Finished processing for year: {year} ---")
 
-    logger.info("All processing completed successfully.")
+        logger.info("All processing completed successfully.")
     print("All processing completed successfully.")
 
 
