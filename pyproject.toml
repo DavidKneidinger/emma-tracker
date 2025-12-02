@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "emma-tracker"
+version = "1.0.0"
+description = "European Mesoscale Convective System Model Assessment-Tracker (EMMA-Tracker)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"} 
+authors = [
+  {name = "David Kneidinger", email = "david.kneidinger@uni-graz.at"},
+]
+keywords = ["climate", "meteorology", "MCS", "tracking", "CORDEX", "GPM"]
+
+dependencies = [
+  "numpy",
+  "pandas",
+  "xarray",
+  "netCDF4",        
+  "geopy",          
+  "scipy", 
+  "scikit-image",         
+  "pyyaml",        
+  "dask",          
+  "bottleneck",     
+  "tqdm",
+  "pytest"       
+]
+
+[project.scripts]
+emma-tracker = "emma.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["emma"]
