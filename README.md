@@ -113,3 +113,6 @@
  ---
  **Contact:** David Kneidinger (david.kneidinger@uni-graz.at)  
  *Wegener Center for Climate and Global Change, University of Graz*
+
+ **Funding**
+ Development of this algorithm was funded by the Österreichische Forschungsförderungsgesellschaft (FFG) as part of the MoCCA project.
