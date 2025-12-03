@@ -31,7 +31,7 @@
  Clone this repository and install it in "editable" mode. This handles all dependencies (xarray, numpy, dask, etc.) automatically via `pyproject.toml`.
  
  ```bash
- git clone [https://github.com/DavKnei/emma-tracker.git](https://github.com/DavKnei/emma-tracker.git)
+ git clone [https://github.com/DavidKneidinger/emma-tracker.git](https://github.com/DavidKneidinger/emma-tracker.git)
  cd emma-tracker
  pip install -e .
  ```
