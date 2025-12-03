@@ -1,11 +1,11 @@
 data_source: Test data
 detection: true
-detection_output_path: /nas/home/dkn/Desktop/mcs-tracking/tests/data/output/detection
+detection_output_path: /nas/home/dkn/Desktop/emma-tracker/tests/data/output/detection
 file_suffix: .nc_test
-filtered_tracking_output_dir: /nas/home/dkn/Desktop/mcs-tracking/tests/data/output/tracking_filtered
+filtered_tracking_output_dir: /nas/home/dkn/Desktop/emma-tracker/tests/data/output/tracking_filtered
 heavy_precip_threshold: 10.0
 lat_name: lat
-lifted_index_data_directory: /nas/home/dkn/Desktop/mcs-tracking/tests/data/input
+lifted_index_data_directory: /nas/home/dkn/Desktop/emma-tracker/tests/test_data
 lifted_index_percentage_threshold: 0.2
 liting_index_var_name: li
 lon_name: lon
@@ -21,9 +21,9 @@ postprocessing_filters:
   lifted_index_threshold: 0.0
   max_area_volatility: 120000.0
   track_straightness_threshold: 0.4
-precip_data_directory: /nas/home/dkn/Desktop/mcs-tracking/tests/data/input
+precip_data_directory: /nas/home/dkn/Desktop/emma-tracker/tests/test_data
 precip_var_name: pr
-raw_tracking_output_dir: /nas/home/dkn/Desktop/mcs-tracking/tests/data/output/tracking_raw
+raw_tracking_output_dir: /nas/home/dkn/Desktop/emma-tracker/tests/data/output/tracking_raw
 run_postprocessing: false
 use_lifted_index: true
 use_multiprocessing: false

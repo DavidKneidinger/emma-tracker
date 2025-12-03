@@ -12,7 +12,7 @@ from tests.create_test_data import create_test_data_scenario
 
 
 TEST_DIR = Path(__file__).parent
-DATA_DIR = TEST_DIR / "data" / "input"
+DATA_DIR = TEST_DIR / "test_data" 
 REF_DIR = TEST_DIR / "reference"
 OUTPUT_DIR = TEST_DIR / "data" / "output"
 CONFIG_PATH = TEST_DIR / "config_test.yaml"
