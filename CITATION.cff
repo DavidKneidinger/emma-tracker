@@ -1,0 +1,18 @@
+cff-version: 1.0.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Kneidinger"
+  given-names: "David"
+  orcid: "https://orcid.org/0009-0005-8670-0175"
+- family-names: "Schaffer"
+  given-names: "Armin"
+  orcid: "https://orcid.org/0009-0005-0770-2130"
+- family-names: "Maraun"
+  given-names: "Douglas"
+  orcid: "https://orcid.org/0000-0002-4076-0456"
+
+title: "EMMA-Tracker: European Mesoscale Convective System Model Assessment-Tracker"
+version: 1.0.0
+doi: still to add
+date-released: still to add 
+url: "https://github.com/DavKnei/emma-tracker"
