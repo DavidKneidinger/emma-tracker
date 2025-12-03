@@ -103,6 +103,9 @@
  
  > **Kneidinger, D., Schaffer, A., & Maraun, D. (2025).** *EMMA-Tracker: European Mesoscale Convective System Model Assessment-Tracker.* [Journal Name], [DOI].
  
+ ## Improvments and suggestions
+ If you encounter any errors or have suggestions for improvment, simply contact me or open um an issue directly in github.
+ 
  ## License
  
  This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
