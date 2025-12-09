@@ -10,6 +10,26 @@ import sys
 import logging
 from collections import defaultdict
 
+def _is_regular_grid(lat_1d, lon_1d, lat_2d):
+    """
+    Check if the grid is a regular lat/lon grid (IMERG/ERA5) 
+    or a rotated/curvilinear grid (CORDEX).
+    
+    Logic: If meshgrid(lon_1d, lat_1d) approximately equals lat_2d, it's regular.
+    """
+    try:
+        # Quick check on shapes
+        if lat_2d.shape != (len(lat_1d), len(lon_1d)):
+            return False
+            
+        # Check values (using a slice to avoid memory overhead on large grids)
+        # Check the first column of lat_2d against the 1D lat vector
+        if not np.allclose(lat_2d[:, 0], lat_1d, atol=1e-4):
+            return False
+            
+        return True
+    except:
+        return False
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     """
