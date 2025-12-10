@@ -1,5 +1,5 @@
 """
-code/postprocessing.py
+emma/postprocessing.py
 
 Handles the physics-based filtering of MCS tracks.
 1. Extracts metrics (Straightness, LI, Volatility) from raw tracking files.
@@ -20,11 +20,12 @@ import concurrent.futures
 from .input_output import (
     load_precipitation_data, 
     load_lifted_index_data,
-    save_tracking_result
+    save_dataset_to_netcdf # NEW: Shared saving logic
 )
 
 logger = logging.getLogger(__name__)
 
+# ... (Keep calculate_weighted_center as is) ...
 def calculate_weighted_center(precip_data, mask, lat2d, lon2d):
     """
     Calculates precipitation-weighted center of mass.
@@ -50,6 +51,7 @@ def calculate_weighted_center(precip_data, mask, lat2d, lon2d):
     
     return center_lat, center_lon
 
+# ... (Keep process_single_timestep as is) ...
 def process_single_timestep(
     tracking_file, 
     precip_dir, 
@@ -138,6 +140,7 @@ def process_single_timestep(
         logger.error(f"Error processing stats for {tracking_file}: {e}")
         return []
 
+# ... (Keep filter_tracks as is) ...
 def filter_tracks(df_timesteps, config):
     """
     Aggregates timestep data into track summaries and applies filters.
@@ -210,26 +213,9 @@ def filter_tracks(df_timesteps, config):
 def apply_filter_to_files(raw_files, valid_ids, output_dir):
     """
     Reads raw NC files, masks out invalid IDs, and saves to output_dir
-    maintaining compression and integer encoding.
+    maintaining compression and integer encoding using the shared saver.
     """
     logger.info(f"Writing {len(raw_files)} filtered files to {output_dir}...")
-    
-    # Define encoding to ensure output is compressed and optimized
-    # matches save_tracking_result in input_output.py
-    int_encoding = {"zlib": True, "complevel": 4, "shuffle": True, "_FillValue": 0, "dtype": "int32"}
-    float_encoding = {"zlib": True, "complevel": 4, "dtype": "float32"}
-
-    encoding = {
-        "robust_mcs_id": int_encoding,
-        "mcs_id": int_encoding,
-        "mcs_id_merge_split": int_encoding,
-        "latitude": float_encoding,
-        "longitude": float_encoding,
-        "active_track_id": {"dtype": "int32"},
-        "active_track_lat": float_encoding,
-        "active_track_lon": float_encoding,
-        "crs": {"dtype": "int32"}
-    }
     
     for f in raw_files:
         try:
@@ -245,11 +231,13 @@ def apply_filter_to_files(raw_files, valid_ids, output_dir):
                         data = ds[var].values
                         # Mask: Where ID is NOT in valid_ids, set to 0
                         mask_invalid = ~np.isin(data, list(valid_ids))
-                        data[mask_invalid] = 0
+                        
+                        # Set invalid tracks to 0 (background)
+                        # We use & (data > 0) to leave background 0s alone, but technically redundant
+                        data[mask_invalid & (data > 0)] = 0
                         ds[var].values = data
                 
                 # Also filter the 'active_track_...' tabular variables
-                # so the list of centers matches the grids
                 if 'active_track_id' in ds:
                     active_ids = ds['active_track_id'].values
                     # Keep only those in valid_ids
@@ -271,13 +259,15 @@ def apply_filter_to_files(raw_files, valid_ids, output_dir):
                 
                 # Update attributes
                 ds.attrs['postprocessing_level'] = 'Filtered (LI, Straightness, Volatility)'
+                ds.attrs['history'] += f"; Post-processed on {pd.Timestamp.now().strftime('%Y-%m-%d')}"
                 
-                # Save with specific encoding
-                ds.to_netcdf(out_path, encoding=encoding)
+                # Save using SHARED function to guarantee same encoding/compatibility
+                save_dataset_to_netcdf(ds, out_path)
                 
         except Exception as e:
             logger.error(f"Failed to filter/save {f}: {e}")
 
+# ... (Keep run_postprocessing_year as is) ...
 def run_postprocessing_year(
     year, 
     raw_tracking_dir, 
