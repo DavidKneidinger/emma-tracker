@@ -10,26 +10,109 @@ import sys
 import logging
 from collections import defaultdict
 
+def get_dataset_encoding(ds):
+    """
+    Centralized encoding logic for all EMMA output files.
+    Ensures consistency across detection, tracking, and post-processing.
+    
+    Fixes for ncview:
+    1. 1D Coordinates (lat, lon, time) are UNCOMPRESSED (zlib=False).
+    2. Data variables are COMPRESSED (zlib=True).
+    3. Time uses a fixed epoch.
+    4. Masks use _FillValue = -1 so 0 is visible as background.
+    """
+    encoding = {}
+    
+    # --- 1. Coordinate Encoding (Uncompressed, No Fill Value) ---
+    coord_encoding = {"_FillValue": None, "zlib": False, "dtype": "float32"}
+    
+    # Standardize Time Epoch
+    time_encoding = {
+        "_FillValue": None, 
+        "zlib": False, 
+        "dtype": "float64",
+        "units": "days since 1950-01-01 00:00:00",
+        "calendar": "standard"
+    }
+    
+    # --- 2. Data Encoding (Compressed) ---
+    int_encoding = {
+        "zlib": True,
+        "complevel": 4,
+        "shuffle": True,
+        "_FillValue": -1,  # Critical: 0 becomes valid background
+        "dtype": "int32",
+    }
+    float_encoding = {"zlib": True, "complevel": 4, "dtype": "float32"}
+    byte_encoding = {"dtype": "int8"}
+
+    # Apply Rules based on Variable Existence
+    if "time" in ds: encoding["time"] = time_encoding
+    
+    # 1D Coordinates
+    for c in ["lat", "lon", "rlat", "rlon"]:
+        if c in ds: encoding[c] = coord_encoding
+        
+    # 2D Coordinates (Auxiliary) -> Compressed to save space
+    for c in ["latitude", "longitude"]:
+        if c in ds: encoding[c] = float_encoding
+        
+    # Rotated Pole Container
+    if "rotated_pole" in ds: encoding["rotated_pole"] = {"dtype": "int32"}
+    
+    # Gridded Data Variables
+    grid_vars = [
+        "final_labeled_regions", 
+        "lifted_index_regions", 
+        "robust_mcs_id", 
+        "mcs_id", 
+        "mcs_id_merge_split"
+    ]
+    for v in grid_vars:
+        if v in ds: encoding[v] = int_encoding
+        
+    # Tabular (Track) Variables
+    if "label_id" in ds: encoding["label_id"] = {"dtype": "int32"}
+    if "label_lat" in ds: encoding["label_lat"] = float_encoding
+    if "label_lon" in ds: encoding["label_lon"] = float_encoding
+    
+    if "active_track_id" in ds: encoding["active_track_id"] = {"dtype": "int32"}
+    if "active_track_lat" in ds: encoding["active_track_lat"] = float_encoding
+    if "active_track_lon" in ds: encoding["active_track_lon"] = float_encoding
+    if "active_track_touches_boundary" in ds: encoding["active_track_touches_boundary"] = byte_encoding
+    
+    return encoding
+
+
+def save_dataset_to_netcdf(ds, output_path):
+    """
+    Shared function to save any EMMA Xarray Dataset to NetCDF.
+    Applies the standardized encoding and compression rules.
+    """
+    encoding = get_dataset_encoding(ds)
+    ds.to_netcdf(output_path, encoding=encoding)
+
 def _is_regular_grid(lat_1d, lon_1d, lat_2d):
     """
-    Check if the grid is a regular lat/lon grid (IMERG/ERA5) 
+    Check if the grid is a regular lat/lon grid (IMERG/ERA5)
     or a rotated/curvilinear grid (CORDEX).
-    
+
     Logic: If meshgrid(lon_1d, lat_1d) approximately equals lat_2d, it's regular.
     """
     try:
         # Quick check on shapes
         if lat_2d.shape != (len(lat_1d), len(lon_1d)):
             return False
-            
+
         # Check values (using a slice to avoid memory overhead on large grids)
         # Check the first column of lat_2d against the 1D lat vector
         if not np.allclose(lat_2d[:, 0], lat_1d, atol=1e-4):
             return False
-            
+
         return True
     except:
         return False
+
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     """
@@ -208,7 +291,7 @@ def convert_lifted_index_units(li, target_unit="K"):
         print(
             f"Warning: Unrecognized lifted_index units '{orig_units}'. No conversion applied."
         )
-        factor = 1.0
+        constant = 0  # Default to 0 to be safe
 
     new_li = li + constant
     new_li.attrs["units"] = target_unit
@@ -318,128 +401,193 @@ def serialize_center_points(center_points):
 def save_detection_result(detection_result, output_dir, data_source):
     """
     Saves a single timestep's detection results to a compressed, CF-compliant NetCDF file.
-    
+
     Optimized for CORDEX/Climate Model grids:
-    - Uses 'y'/'x' dimensions.
+    - Uses 'lat'/'lon' for regular grids or 'rlat'/'rlon' for rotated grids.
     - Stores center points as parallel variables.
     - Applies zlib compression.
     """
-    # 1. Prepare Metadata and Paths
     time_val = pd.to_datetime(detection_result["time"]).round("s")
     year_str = time_val.strftime("%Y")
     month_str = time_val.strftime("%m")
-    
+
     structured_dir = os.path.join(output_dir, year_str, month_str)
     os.makedirs(structured_dir, exist_ok=True)
 
     filename = f"detection_{time_val.strftime('%Y%m%dT%H')}.nc"
     output_filepath = os.path.join(structured_dir, filename)
 
-    # 2. Process Center Points (Dictionary -> Parallel Arrays)
-    # The tracking algo expects these to be linked by Label ID.
-    center_points = detection_result.get("center_points", {})
-    
-    if center_points:
-        # Sort by label to ensure deterministic order
-        sorted_labels = sorted(center_points.keys(), key=lambda x: int(x))
-        
-        # Explicitly create numpy array with int32 dtype
-        label_ids = np.array([int(lbl) for lbl in sorted_labels], dtype=np.int32)
-        
-        # Handle cases where value might be None
-        label_lats = [center_points[lbl][0] if center_points[lbl] else np.nan for lbl in sorted_labels]
-        label_lons = [center_points[lbl][1] if center_points[lbl] else np.nan for lbl in sorted_labels]
+    # 1. Determine Grid Type
+    lat_1d = detection_result["lat"]
+    lon_1d = detection_result["lon"]
+    lat_2d = detection_result["lat2d"]
+    lon_2d = detection_result["lon2d"]
+
+    is_regular = _is_regular_grid(lat_1d, lon_1d, lat_2d)
+
+    if is_regular:
+        y_dim, x_dim = "lat", "lon"
     else:
-        # Create empty numpy array with int32 dtype
+        y_dim, x_dim = "rlat", "rlon"
+
+    # 2. Process Center Points
+    center_points = detection_result.get("center_points", {})
+    if center_points:
+        sorted_labels = sorted(center_points.keys(), key=lambda x: int(x))
+        label_ids = np.array([int(lbl) for lbl in sorted_labels], dtype=np.int32)
+        label_lats = [
+            center_points[lbl][0] if center_points[lbl] else np.nan
+            for lbl in sorted_labels
+        ]
+        label_lons = [
+            center_points[lbl][1] if center_points[lbl] else np.nan
+            for lbl in sorted_labels
+        ]
+    else:
         label_ids = np.array([], dtype=np.int32)
         label_lats = []
         label_lons = []
 
-    # 3. Extract Gridded Data (Expand dims for time axis)
-    final_labeled_regions = np.expand_dims(detection_result["final_labeled_regions"], axis=0)
-    lifted_index_regions = np.expand_dims(detection_result["lifted_index_regions"], axis=0)
+    # 3. Extract Grids
+    final_labeled_regions = np.expand_dims(
+        detection_result["final_labeled_regions"], axis=0
+    )
+    lifted_index_regions = np.expand_dims(
+        detection_result["lifted_index_regions"], axis=0
+    )
 
     # 4. Create Dataset
+    data_vars = {
+        "final_labeled_regions": (["time", y_dim, x_dim], final_labeled_regions),
+        "lifted_index_regions": (["time", y_dim, x_dim], lifted_index_regions),
+        "label_id": (["labels"], label_ids),
+        "label_lat": (["labels"], label_lats),
+        "label_lon": (["labels"], label_lons),
+    }
+
+    # Add CORDEX specific variables only if NOT regular
+    if not is_regular:
+        data_vars["rotated_pole"] = ([], b"")
+
     ds = xr.Dataset(
-        data_vars={
-            # Gridded Masks
-            "final_labeled_regions": (["time", "y", "x"], final_labeled_regions),
-            "lifted_index_regions": (["time", "y", "x"], lifted_index_regions),
-            
-            # Tabular Center Points (Parallel Arrays)
-            "label_id": (["labels"], label_ids),
-            "label_lat": (["labels"], label_lats),
-            "label_lon": (["labels"], label_lons),
-            
-            # CRS Placeholder
-            "crs": ([], 0),
-        },
+        data_vars=data_vars,
         coords={
             "time": [time_val],
-            "y": detection_result["lat"],
-            "x": detection_result["lon"],
+            y_dim: lat_1d,
+            x_dim: lon_1d,
         },
     )
 
-    # Add 2D coordinates
-    ds["latitude"] = (("y", "x"), detection_result["lat2d"])
-    ds["longitude"] = (("y", "x"), detection_result["lon2d"])
+    # Add 2D aux coordinates ONLY if rotated.
+    if not is_regular:
+        ds["latitude"] = ((y_dim, x_dim), lat_2d)
+        ds["longitude"] = ((y_dim, x_dim), lon_2d)
 
-    # 5. Enhance Metadata (CF & CORDEX)
+    # Metadata
     ds.attrs = {
-        "title": "EMMA-Tracker Detection Output",
+        "title": "EMMa-Tracker Detection Output",
+        "summary": "Detected Mesoscale Convective Systems (MCS) using the EMMa algorithm. Contains hourly masks of convective objects and their environmental stability.",
         "institution": "Wegener Center for Climate and Global Change, University of Graz",
         "source": data_source,
         "history": f"Created on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "references": "Kneidinger et al. (2025)",
-        "Conventions": "CF-1.8",
-        "project": "EMMA",
-    }
-
-    # Coordinate Attributes
-    ds["y"].attrs = {"standard_name": "projection_y_coordinate", "axis": "Y"}
-    ds["x"].attrs = {"standard_name": "projection_x_coordinate", "axis": "X"}
-    ds["time"].attrs = {"standard_name": "time", "axis": "T"}
-    ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
-    ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
-
-    # Grid Mapping
-    ds["crs"].attrs = {
-        "grid_mapping_name": "latitude_longitude",
-        "longitude_of_prime_meridian": 0.0,
-        "semi_major_axis": 6378137.0,
-        "inverse_flattening": 298.257223563,
+        "Conventions": "CF-1.6, ACDD-1.3",
+        "project": "EMMa",
+        "license": "MIT License",
+        "keywords": "meteorology, climate, MCS, convection, tracking, precipitation",
+        "creator_name": "David Kneidinger",
+        "creator_email": "david.kneidinger@uni-graz.at",
+        "geospatial_lat_units": "degrees_north",
+        "geospatial_lon_units": "degrees_east",
     }
 
     # Variable Attributes
+    ds[y_dim].attrs = {
+        "standard_name": "latitude" if is_regular else "grid_latitude",
+        "units": "degrees_north" if is_regular else "degrees",
+    }
+    ds[x_dim].attrs = {
+        "standard_name": "longitude" if is_regular else "grid_longitude",
+        "units": "degrees_east" if is_regular else "degrees",
+    }
+    ds["time"].attrs = {"standard_name": "time"}
+
+    if not is_regular:
+        # Rotated grids: Standard_name required for 2D vars
+        ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
+        ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
+
+        ds["rotated_pole"].attrs = {
+            "grid_mapping_name": "rotated_latitude_longitude",
+            "grid_north_pole_latitude": 39.25,
+            "grid_north_pole_longitude": -162.0,
+        }
+
     for var in ["final_labeled_regions", "lifted_index_regions"]:
-        ds[var].attrs["grid_mapping"] = "crs"
-        ds[var].attrs["coordinates"] = "latitude longitude"
-        ds[var].attrs["units"] = "1"
+        if not is_regular:
+            ds[var].attrs["grid_mapping"] = "rotated_pole"
+            ds[var].attrs["coordinates"] = "latitude longitude"
+        else:
+            # Regular: Remove 'coordinates' attribute. ncview infers from dimensions.
+            if "coordinates" in ds[var].attrs:
+                del ds[var].attrs["coordinates"]
         ds[var].attrs["cell_methods"] = "time: point"
 
-    ds["final_labeled_regions"].attrs["long_name"] = "Labeled Convective Regions"
-    ds["final_labeled_regions"].attrs["description"] = "Integer labels of detected potential MCS features."
-    
-    ds["lifted_index_regions"].attrs["long_name"] = "Lifted Index Mask"
-    ds["lifted_index_regions"].attrs["description"] = "Binary mask (1=Unstable, 0=Stable) based on Lifted Index threshold."
+    ds["final_labeled_regions"].attrs.update(
+        {"long_name": "Labeled Convective Regions", "units": "1"}
+    )
+    ds["lifted_index_regions"].attrs.update(
+        {"long_name": "Lifted Index Mask", "units": "1"}
+    )
+    ds["label_id"].attrs.update({"long_name": "Feature Label IDs", "units": "1"})
+    ds["label_lat"].attrs = {
+        "long_name": "Feature Center Latitude",
+        "units": "degrees_north",
+    }
+    ds["label_lon"].attrs = {
+        "long_name": "Feature Center Longitude",
+        "units": "degrees_east",
+    }
 
-    ds["label_id"].attrs = {"long_name": "Feature Label IDs", "description": "IDs corresponding to values in final_labeled_regions."}
+    # Encoding
+    # 1. Coordinates: Uncompressed (zlib=False).
+    coord_encoding = {"zlib": False, "dtype": "float32"}
+    time_encoding = {
+        "_FillValue": None,
+        "zlib": False,
+        "dtype": "float64",
+        "units": "days since 1950-01-01 00:00:00",
+        "calendar": "standard",
+    }
 
-    # 6. Encoding (Compression)
-    int_encoding = {"zlib": True, "complevel": 4, "shuffle": True, "_FillValue": 0, "dtype": "int32"}
+    # 2. Data: Compressed, _FillValue=-1 (0 is background)
+    int_encoding = {
+        "zlib": True,
+        "complevel": 4,
+        "shuffle": True,
+        "_FillValue": -1,  # FIX: Make 0 valid background
+        "dtype": "int32",
+    }
     float_encoding = {"zlib": True, "complevel": 4, "dtype": "float32"}
-    
+
     encoding = {
         "final_labeled_regions": int_encoding,
         "lifted_index_regions": int_encoding,
-        "latitude": float_encoding,
-        "longitude": float_encoding,
         "label_id": {"dtype": "int32"},
         "label_lat": {"dtype": "float32"},
         "label_lon": {"dtype": "float32"},
-        "crs": {"dtype": "int32"}
+        "time": time_encoding,
     }
+
+    if not is_regular:
+        encoding["rotated_pole"] = {"dtype": "int32"}
+        encoding["latitude"] = float_encoding
+        encoding["longitude"] = float_encoding
+        encoding["rlat"] = coord_encoding
+        encoding["rlon"] = coord_encoding
+    else:
+        encoding["lat"] = coord_encoding
+        encoding["lon"] = coord_encoding
 
     ds.to_netcdf(output_filepath, encoding=encoding)
 
@@ -447,13 +595,10 @@ def save_detection_result(detection_result, output_dir, data_source):
 def load_individual_detection_files(year_input_dir, use_li_filter):
     """
     Load a sequence of detection result NetCDF files.
-    
-    Updated to handle CORDEX-ready format with parallel arrays for center points.
+    Handles 'lat'/'lon' (Regular), 'rlat'/'rlon' (CORDEX), or 'y'/'x' (Legacy).
     Reconstructs the center_points dictionary for the tracking algorithm.
     """
     detection_results = []
-    
-    # Recursive search for .nc files
     file_pattern = os.path.join(year_input_dir, "**", "detection_*.nc")
     filepaths = sorted(glob.glob(file_pattern, recursive=True))
 
@@ -464,61 +609,59 @@ def load_individual_detection_files(year_input_dir, use_li_filter):
     for filepath in filepaths:
         try:
             with xr.open_dataset(filepath) as ds:
-                # 1. Read Basic Metadata & Grids
                 time_val = ds["time"].values[0]
-                
-                # Handle 'y'/'x' or legacy 'lat'/'lon' dimensions transparently
-                lat_dim = 'y' if 'y' in ds.dims else 'lat'
-                lon_dim = 'x' if 'x' in ds.dims else 'lon'
-                
+
+                # Robust Dimension Detection
+                if "rlat" in ds.dims:
+                    lat_dim, lon_dim = "rlat", "rlon"
+                elif "lat" in ds.dims:
+                    lat_dim, lon_dim = "lat", "lon"
+                elif "y" in ds.dims:
+                    lat_dim, lon_dim = "y", "x"
+                else:
+                    lat_dim, lon_dim = ds.dims[1], ds.dims[2]
+
                 lat = ds[lat_dim].values
                 lon = ds[lon_dim].values
-                lat2d = ds["latitude"].values
-                lon2d = ds["longitude"].values
-                
+
+                # Coordinate Reconstruction
+                # If 2D coords exist (CORDEX), use them. If not (Regular), recreate them.
+                if "latitude" in ds.variables:
+                    lat2d = ds["latitude"].values
+                    lon2d = ds["longitude"].values
+                elif "lat" in ds.variables and ds["lat"].ndim == 2:
+                    lat2d = ds["lat"].values
+                    lon2d = ds["lon"].values
+                else:
+                    # Recreate 2D mesh for internal processing if missing (Regular Grid)
+                    lon2d, lat2d = np.meshgrid(lon, lat)
+
                 final_labeled_regions = ds["final_labeled_regions"].values[0]
 
-                # 2. Reconstruct Center Points Dictionary
-                # Tracking expects: {'1': (lat, lon), '2': (lat, lon)}
+                # Reconstruct Center Points
                 center_points_dict = {}
-                
-                # Check if we have the new variables (parallel arrays)
                 if "label_id" in ds:
                     ids = ds["label_id"].values
                     lats = ds["label_lat"].values
                     lons = ds["label_lon"].values
-                    
                     for i, label_id in enumerate(ids):
-                        # Convert numpy types to native Python types for safety
                         lbl_str = str(int(label_id))
                         lbl_lat = float(lats[i])
                         lbl_lon = float(lons[i])
-                        
-                        # Handle NaNs
                         if np.isnan(lbl_lat) or np.isnan(lbl_lon):
                             center_points_dict[lbl_str] = None
                         else:
                             center_points_dict[lbl_str] = (lbl_lat, lbl_lon)
-                
-                # Fallback for old files (JSON attributes) - useful during transition
                 elif "center_points_t0" in ds.attrs:
                     try:
                         import json
-                        center_points_json = ds.attrs["center_points_t0"]
-                        intermediate = json.loads(center_points_json)
-                        center_points_dict = json.loads(intermediate) if isinstance(intermediate, str) else intermediate
-                    except:
-                        center_points_dict = {}
-                elif "center_points_t0" in ds["final_labeled_regions"].attrs: # Legacy location
-                    try:
-                        import json
-                        center_points_json = ds["final_labeled_regions"].attrs["center_points_t0"]
-                        intermediate = json.loads(center_points_json)
-                        center_points_dict = json.loads(intermediate) if isinstance(intermediate, str) else intermediate
+
+                        center_points_dict = json.loads(ds.attrs["center_points_t0"])
+                        if isinstance(center_points_dict, str):
+                            center_points_dict = json.loads(center_points_dict)
                     except:
                         center_points_dict = {}
 
-                # 3. Assemble Result
                 detection_result = {
                     "final_labeled_regions": final_labeled_regions,
                     "time": time_val,
@@ -531,11 +674,13 @@ def load_individual_detection_files(year_input_dir, use_li_filter):
 
                 if use_li_filter:
                     if "lifted_index_regions" in ds:
-                        detection_result["lifted_index_regions"] = ds["lifted_index_regions"].values[0]
+                        detection_result["lifted_index_regions"] = ds[
+                            "lifted_index_regions"
+                        ].values[0]
                     else:
-                        # Fallback if variable is missing
-                        detection_result["lifted_index_regions"] = np.zeros_like(final_labeled_regions)
-                        print(f"Warning: 'lifted_index_regions' missing in {filepath}")
+                        detection_result["lifted_index_regions"] = np.zeros_like(
+                            final_labeled_regions
+                        )
 
                 detection_results.append(detection_result)
 
@@ -546,7 +691,10 @@ def load_individual_detection_files(year_input_dir, use_li_filter):
     detection_results.sort(key=lambda x: x["time"])
     return detection_results
 
-def save_tracking_result(tracking_data_for_timestep, output_dir, data_source, config=None):
+
+def save_tracking_result(
+    tracking_data_for_timestep, output_dir, data_source, config=None
+):
     """
     Saves a single timestep's tracking results to a compressed, CF-compliant NetCDF file.
 
@@ -591,25 +739,33 @@ def save_tracking_result(tracking_data_for_timestep, output_dir, data_source, co
     Returns:
         None
     """
-    # --- 1. PREPARE METADATA AND PATHS ---
     time_val = pd.to_datetime(tracking_data_for_timestep["time"]).round("s")
     year_str = time_val.strftime("%Y")
     month_str = time_val.strftime("%m")
-    
+
     structured_dir = os.path.join(output_dir, year_str, month_str)
     os.makedirs(structured_dir, exist_ok=True)
 
     filename = f"tracking_{time_val.strftime('%Y%m%dT%H')}.nc"
     output_filepath = os.path.join(structured_dir, filename)
 
-    # --- 2. PROCESS CENTER POINTS & BOUNDARY FLAG ---
-    # We convert the dictionary {id: (lat, lon)} into parallel lists.
-    # We also check if the system touches the domain boundary (crucial for RCM evaluation).
-    
+    # 1. Determine Grid Type
+    lat_1d = tracking_data_for_timestep["lat"]
+    lon_1d = tracking_data_for_timestep["lon"]
+    lat_2d = tracking_data_for_timestep["lat2d"]
+
+    is_regular = _is_regular_grid(lat_1d, lon_1d, lat_2d)
+
+    if is_regular:
+        y_dim, x_dim = "lat", "lon"
+    else:
+        y_dim, x_dim = "rlat", "rlon"
+
+    # 2. Process Center Points
     centers_dict = tracking_data_for_timestep.get("tracking_centers", {})
-    
-    # Get grid info for boundary check (assumes 2D array (y, x))
     grid = tracking_data_for_timestep["mcs_id"]
+    if grid.ndim == 3:
+        grid = grid[0]
     ymax, xmax = grid.shape[0] - 1, grid.shape[1] - 1
 
     active_ids = []
@@ -618,14 +774,10 @@ def save_tracking_result(tracking_data_for_timestep, output_dir, data_source, co
     active_boundary_flags = []
 
     if centers_dict:
-        # Sort by ID to ensure deterministic order in the file
         sorted_ids = sorted(centers_dict.keys(), key=lambda x: int(x))
-        
-        # Enforce Integer Type
         active_ids = np.array([int(tid) for tid in sorted_ids], dtype=np.int32)
-        
+
         for tid in sorted_ids:
-            # A. Extract Center Coordinates
             coords = centers_dict[tid]
             if coords and coords[0] is not None:
                 active_lats.append(coords[0])
@@ -633,159 +785,176 @@ def save_tracking_result(tracking_data_for_timestep, output_dir, data_source, co
             else:
                 active_lats.append(np.nan)
                 active_lons.append(np.nan)
-            
-            # B. Boundary Check
-            # Create a boolean mask for this specific ID
-            mask = (grid == int(tid))
-            
-            # Check edges: Top (row 0), Bottom (row ymax), Left (col 0), Right (col xmax)
+
+            mask = grid == int(tid)
             touches = (
-                np.any(mask[0, :]) or 
-                np.any(mask[ymax, :]) or 
-                np.any(mask[:, 0]) or 
-                np.any(mask[:, xmax])
+                np.any(mask[0, :])
+                or np.any(mask[ymax, :])
+                or np.any(mask[:, 0])
+                or np.any(mask[:, xmax])
             )
             active_boundary_flags.append(int(touches))
-            
-        # Enforce Byte/Integer Type for flags
-        active_boundary_flags = np.array(active_boundary_flags, dtype=np.int8)
 
+        active_boundary_flags = np.array(active_boundary_flags, dtype=np.int8)
     else:
-        # Handle empty timesteps gracefully with explicit types
         active_ids = np.array([], dtype=np.int32)
         active_lats = []
         active_lons = []
         active_boundary_flags = np.array([], dtype=np.int8)
 
-    # --- 3. PREPARE GRIDDED DATA ---
-    # Expand dimensions to add 'time' axis (standard for NetCDF tools)
-    robust_mcs_id_arr = np.expand_dims(tracking_data_for_timestep["robust_mcs_id"], axis=0)
+    # 3. Extract Grids
+    robust_mcs_id_arr = np.expand_dims(
+        tracking_data_for_timestep["robust_mcs_id"], axis=0
+    )
     mcs_id_arr = np.expand_dims(tracking_data_for_timestep["mcs_id"], axis=0)
-    mcs_id_merge_split_arr = np.expand_dims(tracking_data_for_timestep["mcs_id_merge_split"], axis=0)
+    mcs_id_merge_split_arr = np.expand_dims(
+        tracking_data_for_timestep["mcs_id_merge_split"], axis=0
+    )
 
-    # --- 4. CREATE DATASET ---
-    # We use dimensions 'y' and 'x' instead of 'lat'/'lon' to support 
-    # Curvilinear/Rotated grids (common in CORDEX) safely.
+    # 4. Create Dataset
+    data_vars = {
+        "robust_mcs_id": (["time", y_dim, x_dim], robust_mcs_id_arr),
+        "mcs_id": (["time", y_dim, x_dim], mcs_id_arr),
+        "mcs_id_merge_split": (["time", y_dim, x_dim], mcs_id_merge_split_arr),
+        "active_track_id": (["tracks"], active_ids),
+        "active_track_lat": (["tracks"], active_lats),
+        "active_track_lon": (["tracks"], active_lons),
+        "active_track_touches_boundary": (["tracks"], active_boundary_flags),
+    }
+
+    if not is_regular:
+        data_vars["rotated_pole"] = ([], b"")
+
     ds = xr.Dataset(
-        data_vars={
-            # Gridded Variables (The Masks)
-            "robust_mcs_id": (["time", "y", "x"], robust_mcs_id_arr),
-            "mcs_id": (["time", "y", "x"], mcs_id_arr),
-            "mcs_id_merge_split": (["time", "y", "x"], mcs_id_merge_split_arr),
-            
-            # Tabular Variables (The Track Summary)
-            "active_track_id": (["tracks"], active_ids),
-            "active_track_lat": (["tracks"], active_lats),
-            "active_track_lon": (["tracks"], active_lons),
-            "active_track_touches_boundary": (["tracks"], active_boundary_flags),
-            
-            # CRS Placeholder (Best practice for GIS)
-            "crs": ([], 0),
-        },
+        data_vars=data_vars,
         coords={
             "time": [time_val],
-            "y": tracking_data_for_timestep["lat"],
-            "x": tracking_data_for_timestep["lon"],
+            y_dim: lat_1d,
+            x_dim: lon_1d,
         },
     )
 
-    # Attach the actual 2D coordinates
-    ds["latitude"] = (("y", "x"), tracking_data_for_timestep["lat2d"])
-    ds["longitude"] = (("y", "x"), tracking_data_for_timestep["lon2d"])
+    # ONLY Add 2D aux coordinates if the grid is rotated
+    if not is_regular:
+        ds["latitude"] = ((y_dim, x_dim), tracking_data_for_timestep["lat2d"])
+        ds["longitude"] = ((y_dim, x_dim), tracking_data_for_timestep["lon2d"])
 
-    # --- 5. ENHANCE METADATA (CF-CONVENTIONS) ---
-    
-    # Global Attributes
+    # Metadata
     ds.attrs = {
-        "title": "EMMA-Tracker Output",
+        "title": "EMMa-Tracker Tracking Output",
+        "summary": "Tracked Mesoscale Convective Systems (MCS) using the EMMa algorithm. Contains hourly masks of convective objects and their environmental stability.",
         "institution": "Wegener Center for Climate and Global Change, University of Graz",
         "source": data_source,
         "history": f"Created on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "references": "Kneidinger et al. (2025)",
-        "contact": "david.kneidinger@uni-graz.at",
-        "Conventions": "CF-1.8",
-        "project": "EMMA",
+        "Conventions": "CF-1.6, ACDD-1.3",
+        "project": "EMMa",
+        "license": "MIT License",
+        "keywords": "meteorology, climate, MCS, convection, tracking, precipitation",
+        "creator_name": "David Kneidinger",
+        "creator_email": "david.kneidinger@uni-graz.at",
+        "geospatial_lat_units": "degrees_north",
+        "geospatial_lon_units": "degrees_east",
     }
-    
-    # Embed Full Configuration for Provenance
+    if not is_regular:
+        ds.attrs["CORDEX_domain"] = "EUR-11"
+
     if config:
         import json
+
         try:
-            ds.attrs['run_configuration'] = json.dumps(config, default=str)
-        except Exception:
-            pass # Fail silently if config isn't serializable
+            ds.attrs["run_configuration"] = json.dumps(config, default=str)
+        except:
+            pass
 
     # Coordinate Attributes
-    ds["y"].attrs = {"standard_name": "projection_y_coordinate", "axis": "Y"}
-    ds["x"].attrs = {"standard_name": "projection_x_coordinate", "axis": "X"}
-    ds["time"].attrs = {"standard_name": "time", "axis": "T"}
-    ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
-    ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
-
-    # Grid Mapping Attributes (WGS84 default, adjustable for Rotated Pole)
-    ds["crs"].attrs = {
-        "grid_mapping_name": "latitude_longitude",
-        "longitude_of_prime_meridian": 0.0,
-        "semi_major_axis": 6378137.0,
-        "inverse_flattening": 298.257223563,
+    ds[y_dim].attrs = {
+        "standard_name": "latitude" if is_regular else "grid_latitude",
+        "units": "degrees_north" if is_regular else "degrees",
     }
+    ds[x_dim].attrs = {
+        "standard_name": "longitude" if is_regular else "grid_longitude",
+        "units": "degrees_east" if is_regular else "degrees",
+    }
+    ds["time"].attrs = {"standard_name": "time"}
 
-    # Variable Attributes
-    # We link the data to the coordinates and the CRS
+    if not is_regular:
+        # Rotated grid attributes
+        ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
+        ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
+
+        ds["rotated_pole"].attrs = {
+            "grid_mapping_name": "rotated_latitude_longitude",
+            "grid_north_pole_latitude": 39.25,
+            "grid_north_pole_longitude": -162.0,
+        }
+
     grid_vars = ["robust_mcs_id", "mcs_id", "mcs_id_merge_split"]
     for var in grid_vars:
-        ds[var].attrs["grid_mapping"] = "crs"
-        ds[var].attrs["coordinates"] = "latitude longitude"
-        ds[var].attrs["units"] = "1"
+        if not is_regular:
+            ds[var].attrs["grid_mapping"] = "rotated_pole"
+            ds[var].attrs["coordinates"] = "latitude longitude"
+        else:
+            # Regular: Remove 'coordinates' attribute.
+            if "coordinates" in ds[var].attrs:
+                del ds[var].attrs["coordinates"]
         ds[var].attrs["cell_methods"] = "time: point"
 
-    ds["robust_mcs_id"].attrs.update({
-        "long_name": "Robust Mature MCS Track IDs",
-        "description": "Subset of IDs: Only includes systems during their mature phase (meeting area & instability criteria)."
-    })
-    
-    ds["mcs_id"].attrs.update({
-        "long_name": "Main MCS Track IDs",
-        "description": "Full lifecycle Track IDs of identified Main MCSs (includes initiation and decay)."
-    })
-
-    ds["mcs_id_merge_split"].attrs.update({
-        "long_name": "Family Tree Track IDs",
-        "description": "Comprehensive IDs including Main MCSs and all associated merging/splitting components."
-    })
-
-    ds["active_track_id"].attrs = {"long_name": "Active Track IDs", "description": "List of Track IDs present in this timestep."}
-    ds["active_track_lat"].attrs = {"long_name": "Active Track Center Latitude", "units": "degrees_north"}
-    ds["active_track_lon"].attrs = {"long_name": "Active Track Center Longitude", "units": "degrees_east"}
+    ds["robust_mcs_id"].attrs.update(
+        {"long_name": "Robust Mature MCS Track IDs", "units": "1"}
+    )
+    ds["mcs_id"].attrs.update({"long_name": "Main MCS Track IDs", "units": "1"})
+    ds["mcs_id_merge_split"].attrs.update(
+        {"long_name": "Family Tree Track IDs", "units": "1"}
+    )
+    ds["active_track_id"].attrs = {"long_name": "Active Track IDs", "units": "1"}
     ds["active_track_touches_boundary"].attrs = {
-        "long_name": "Boundary Touching Flag", 
-        "description": "1 if the system mask touches the domain edge, 0 otherwise.",
-        "units": "1"
+        "long_name": "Boundary Touching Flag",
+        "units": "1",
     }
 
-    # --- 6. DEFINE ENCODING (COMPRESSION) ---
-    # zlib=True: Enables compression
-    # complevel=4: Good balance of size vs read/write speed
-    # shuffle=True: Reorders bytes to improve compression on integer data
-    
-    int_encoding = {"zlib": True, "complevel": 4, "shuffle": True, "_FillValue": 0, "dtype": "int32"}
+    # Encoding
+
+    # 1. Coordinates: Uncompressed (zlib=False).
+    coord_encoding = {"zlib": False, "dtype": "float32"}
+    time_encoding = {
+        "_FillValue": None,
+        "zlib": False,
+        "dtype": "float64",
+        "units": "days since 1950-01-01 00:00:00",
+        "calendar": "standard",
+    }
+
+    # 2. Data: Compressed, _FillValue=-1 (0 is background)
+    int_encoding = {
+        "zlib": True,
+        "complevel": 4,
+        "shuffle": True,
+        "_FillValue": -1,  # FIX: Make 0 valid background
+        "dtype": "int32",
+    }
     float_encoding = {"zlib": True, "complevel": 4, "dtype": "float32"}
-    byte_encoding = {"dtype": "int8"} # Efficient for 0/1 flag
+    byte_encoding = {"dtype": "int8"}
 
     encoding = {
         "robust_mcs_id": int_encoding,
         "mcs_id": int_encoding,
         "mcs_id_merge_split": int_encoding,
-        # Coordinates are usually float, we compress them too as they are large 2D arrays
-        "latitude": float_encoding,
-        "longitude": float_encoding,
-        # Tabular data encoding
         "active_track_id": {"dtype": "int32"},
         "active_track_lat": {"dtype": "float32"},
         "active_track_lon": {"dtype": "float32"},
         "active_track_touches_boundary": byte_encoding,
-        "crs": {"dtype": "int32"}
+        "time": time_encoding,
     }
 
-    # --- 7. SAVE ---
+    if not is_regular:
+        encoding["rotated_pole"] = {"dtype": "int32"}
+        encoding["latitude"] = float_encoding
+        encoding["longitude"] = float_encoding
+        encoding["rlat"] = coord_encoding
+        encoding["rlon"] = coord_encoding
+    else:
+        encoding["lat"] = coord_encoding
+        encoding["lon"] = coord_encoding
+
     ds.to_netcdf(output_filepath, encoding=encoding)
