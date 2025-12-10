@@ -161,7 +161,7 @@ def main():
     # Now, group the filtered list by year
     files_by_year = group_files_by_year(filtered_precip_files)
 
-    if USE_LIFTED_INDEX:
+    if RUN_DETECTION and USE_LIFTED_INDEX:
         lifted_index_data_dir = config["lifted_index_data_directory"]
         lifted_index_data_var = config["liting_index_var_name"]
 
@@ -188,7 +188,8 @@ def main():
         li_files_by_year = group_files_by_year(filtered_li_files)
 
     # --- 3. MAIN YEARLY PROCESSING LOOP ---
-    logging_switched_to_tracking = False  # Flag to ensure we only switch once
+    logging_switched_to_tracking = False 
+    logging_switched_to_postprocessing = False
 
     for year in sorted(files_by_year.keys()):
         logger.info(f"--- Starting processing for year: {year} ---")
@@ -347,6 +348,16 @@ def main():
 
         # --- 3e. POST-PROCESSING PHASE ---
         if RUN_POSTPROCESSING:
+            if not logging_switched_to_postprocessing:
+                # Ensure directory exists
+                os.makedirs(tracking_output_dir, exist_ok=True)
+                
+                # Switch logger to postprocessing.log
+                # mode='w' ensures we start fresh on the first pass
+                setup_logging(tracking_output_dir, filename="postprocessing.log", mode="w")
+                
+                logger.info("Logging initialized for POST-PROCESSING phase.")
+                logging_switched_to_postprocessing = True
             try:
                 run_postprocessing_year(
                     year,
