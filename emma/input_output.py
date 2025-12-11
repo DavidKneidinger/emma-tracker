@@ -286,7 +286,7 @@ def convert_lifted_index_units(li, target_unit="K"):
     if orig_units in ["K", "Kelvin"]:
         constant = 0
     elif orig_units in ["°C", "degree_Celcius"]:
-        constant = 273.15
+        constant = 0  # Lifted index is a difference measure hence it doesnt matter
     else:
         print(
             f"Warning: Unrecognized lifted_index units '{orig_units}'. No conversion applied."
