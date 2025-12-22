@@ -1,4 +1,4 @@
- # EMMA-Tracker: European Mesoscale Convective System Model Assessment
+ # EMMA-Tracker: Evoluation-Based Mesoscale Convective System Model Assessment-Tracker
  
  **A robust detection and tracking algorithm for Mesoscale Convective Systems (MCS), optimized for climate model evaluation.**
  
@@ -67,7 +67,7 @@
  postprocessing_filters:
    lifted_index_threshold: 0.0          # Reject systems in stable environments (Mean LI > 0)
    track_straightness_threshold: 0.4    # Reject erratic/stationary systems
-   max_area_volatility: 120000.0        # Reject unphysical growth (frontal mergers)
+   max_area_volatility: 90000.0        # Reject unphysical growth (frontal mergers)
  ```
  
  ## Output Data Structure
@@ -101,7 +101,10 @@
  
  If you use the EMMA-Tracker in your research, please cite the following paper:
  
- > **Kneidinger, D., Schaffer, A., & Maraun, D. (2025).** *EMMA-Tracker: European Mesoscale Convective System Model Assessment-Tracker.* [Journal Name], [DOI].
+ > **Kneidinger, D., Schaffer, A., & Maraun, D. (2025).** *A Process-Based Tracking Algorithm and the Resulting
+27-Year Reference Dataset for Evaluating European
+Warm-Season Mesoscale Convective Systems in
+Climate Models* [JAMES], [DOI].
  
  ## Improvments and suggestions
  If you encounter any errors or have suggestions for improvment, simply contact me or open um an issue directly in github.
