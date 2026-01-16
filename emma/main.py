@@ -14,6 +14,7 @@ from .detection_main import detect_mcs_in_file
 from .tracking_main import track_mcs
 from .input_output import (
     setup_logging,
+    align_files_by_hour,
     handle_exception,
     filter_files_by_date,
     group_files_by_year,
@@ -35,6 +36,7 @@ def process_file(
     lat_name,
     lon_name,
     heavy_precip_threshold,
+    lifted_index_threshold,
     moderate_precip_threshold,
     min_size_threshold,
     min_nr_plumes,
@@ -52,6 +54,7 @@ def process_file(
         lat_name,
         lon_name,
         heavy_precip_threshold,
+        lifted_index_threshold,
         moderate_precip_threshold,
         min_size_threshold,
         min_nr_plumes,
@@ -109,6 +112,7 @@ def main():
     # Detection parameters
     min_size_threshold = config.get("min_size_threshold", 10)
     heavy_precip_threshold = config.get("heavy_precip_threshold", 7)
+    lifted_index_threshold = config.get("lifted_index_threshold", -2)
     moderate_precip_threshold = config.get("moderate_precip_threshold", 1)
     min_nr_plumes = config.get("min_nr_plumes", 1)
     lifted_index_percentage = config.get("lifted_index_percentage_threshold", 0.2)
@@ -242,20 +246,40 @@ def main():
 
         if USE_LIFTED_INDEX:
             li_files_year = li_files_by_year.get(year, [])
-            if RUN_DETECTION and len(precip_file_list_year) != len(li_files_year):
-                logger.warning(
-                    f"Mismatch in file counts for {year}. Precip: {len(precip_file_list_year)}, LI: {len(li_files_year)}. Skipping year."
-                )
-                continue
         else:
-            li_files_year = [None] * len(precip_file_list_year)
-            lifted_index_data_var = None
-
+            li_files_year = [] # Empty list is fine here, handled in Else block below
+            
         # --- 3a. DETECTION PHASE ---
         if RUN_DETECTION:
             # Configure logging for detection
             setup_logging(detection_output_path, filename="detection.log", mode=log_modes["detection"])
             log_modes["detection"] = "a" 
+
+            matched_precip_files = []
+            matched_li_files = []
+
+            # Perform Alignment
+            if USE_LIFTED_INDEX:
+                logger.info("Aligning Precipitation and Lifted Index files...")
+                file_pairs, miss_li, miss_precip = align_files_by_hour(precip_file_list_year, li_files_year)
+                
+                if miss_li:
+                    logger.warning(f"Year {year}: {len(miss_li)} Precip files have no matching LI file. Skipped.")
+                if miss_precip:
+                    logger.info(f"Year {year}: {len(miss_precip)} LI files unused (no Precip).")
+
+                if not file_pairs:
+                    logger.warning(f"No valid file pairs found for year {year}. Skipping detection.")
+                    continue
+                
+                # Unpack pairs
+                matched_precip_files = [p[0] for p in file_pairs]
+                matched_li_files = [p[1] for p in file_pairs]
+                
+            else:
+                # No alignment needed
+                matched_precip_files = precip_file_list_year
+                matched_li_files = [None] * len(precip_file_list_year)
             
             logger.info(f"Running detection for {len(precip_file_list_year)} files in {year}...")
 
@@ -273,13 +297,14 @@ def main():
                             lat_name,
                             lon_name,
                             heavy_precip_threshold,
+                            lifted_index_threshold,
                             moderate_precip_threshold,
                             min_size_threshold,
                             min_nr_plumes,
                             lifted_index_percentage
                         )
                         for precip_file, li_file in zip(
-                            precip_file_list_year, li_files_year
+                            matched_precip_files, matched_li_files
                         )
                     ]
                     for future in concurrent.futures.as_completed(futures):
@@ -291,7 +316,7 @@ def main():
                         except Exception as e:
                             logger.error(f"A detection task failed: {e}")
             else:
-                for precip_file, li_file in zip(precip_file_list_year, li_files_year):
+                for precip_file, li_file in zip(matched_precip_files, matched_li_files):
                     detection_result = detect_mcs_in_file(
                         precip_file,
                         precip_data_var,
@@ -300,6 +325,7 @@ def main():
                         lat_name,
                         lon_name,
                         heavy_precip_threshold,
+                        lifted_index_threshold,
                         moderate_precip_threshold,
                         min_size_threshold,
                         min_nr_plumes,

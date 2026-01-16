@@ -10,7 +10,110 @@ import sys
 import logging
 from collections import defaultdict
 
+def align_files_by_hour(precip_files, li_files):
+    """
+    Pairs Precipitation and Lifted Index files based on internal time coordinates.
+    Ignores minutes so that T12:30 matches T12:00.
+    
+    If internal time reading fails, falls back to assumption based on file counts.
+    
+    Returns:
+        valid_pairs (list): List of tuples (precip_path, li_path)
+        missing_li (list): List of timestamp keys missing LI
+        missing_precip (list): List of timestamp keys missing Precip
+    """
+    logger = logging.getLogger(__name__)
 
+    def get_time_key_from_file(filepath):
+        """
+        Opens the file and extracts the first time value.
+        Returns formatted YYYYMMDDHH string or None if failed.
+        """
+        try:
+            # decode_times=True is default, but explicit is safer
+            with xr.open_dataset(filepath) as ds:
+                if "time" in ds and ds["time"].size > 0:
+                    t = ds["time"].values[0]
+                    # Convert to YYYYMMDDHH string
+                    ts = pd.to_datetime(t)
+                    return ts.strftime("%Y%m%d%H")
+        except Exception:
+            return None
+        return None
+
+    # --- Strategy 1: Match by Internal Time ---
+    precip_map = {}
+    li_map = {}
+    failed_read = False
+
+    # 1. Read Precipitation Files
+    for f in precip_files:
+        t_key = get_time_key_from_file(f)
+        if t_key:
+            precip_map[t_key] = f
+        else:
+            failed_read = True
+            break # Stop reading if one fails, try fallback
+
+    # 2. Read Lifted Index Files (only if precip succeeded)
+    if not failed_read:
+        for f in li_files:
+            t_key = get_time_key_from_file(f)
+            if t_key:
+                li_map[t_key] = f
+            else:
+                failed_read = True
+                break
+
+    # 3. Align or Fallback
+    if not failed_read:
+        valid_pairs = []
+        missing_li = []
+        missing_precip = []
+
+        all_keys = sorted(set(precip_map.keys()) | set(li_map.keys()))
+
+        for key in all_keys:
+            p_file = precip_map.get(key)
+            l_file = li_map.get(key)
+
+            if p_file and l_file:
+                valid_pairs.append((p_file, l_file))
+            elif p_file and not l_file:
+                missing_li.append(key)
+            elif l_file and not p_file:
+                missing_precip.append(key)
+        
+        return valid_pairs, missing_li, missing_precip
+
+    # --- Strategy 2: Fallback (Count Match) ---
+    logger.info("Internal time extraction failed (missing 'time' var or corrupt file). Attempting fallback...")
+    
+    if len(precip_files) == len(li_files):
+        msg = (
+            f"Fallback Triggered: Both directories have {len(precip_files)} files. "
+            "Assuming files are sorted and matched 1-to-1."
+        )
+        print(msg)
+        logger.warning(msg)
+
+        # Sort strictly by filename to ensure alignment
+        p_sorted = sorted(precip_files)
+        l_sorted = sorted(li_files)
+        
+        # Zip them together
+        valid_pairs = list(zip(p_sorted, l_sorted))
+        
+        # In fallback mode, we assume no missing files
+        return valid_pairs, [], []
+
+    else:
+        logger.error(
+            f"Alignment Failed: Internal time missing AND file counts mismatch "
+            f"(Precip: {len(precip_files)}, LI: {len(li_files)}). Cannot pair files."
+        )
+        return [], [], []
+    
 def get_dataset_encoding(ds):
     """
     Centralized encoding logic for all EMMA output files.
