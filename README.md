@@ -101,10 +101,7 @@
  
  If you use the EMMA-Tracker in your research, please cite the following paper:
  
- > **Kneidinger, D., Schaffer, A., & Maraun, D. (2025).** *A Process-Based Tracking Algorithm and the Resulting
-27-Year Reference Dataset for Evaluating European
-Warm-Season Mesoscale Convective Systems in
-Climate Models* [JAMES], [DOI].
+ > TO BE ADDED
  
  ## Improvments and suggestions
  If you encounter any errors or have suggestions for improvment, simply contact me or open um an issue directly in github.
