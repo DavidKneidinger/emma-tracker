@@ -22,6 +22,7 @@ def detect_mcs_in_file(
     lat_name,
     lon_name,
     heavy_precip_threshold,
+    lifted_index_threshold,
     moderate_precip_threshold,
     min_size_threshold,
     min_nr_plumes,
@@ -37,6 +38,7 @@ def detect_mcs_in_file(
     - lifted_index_file_path: Path to the NetCDF file containing the lifted index data.
     - lifted_index_data_var: Variable name of the lifted index.
     - heavy_precip_threshold: Threshold for heavy precipitation (mm/h).
+    - lifted_index_threshold: Threshold for lifted_index flag (K).
     - moderate_precip_threshold: Threshold for moderate precipitation (mm/h).
     - min_size_threshold: Minimum size threshold for clusters (number of grid cells).
     - min_nr_plumes: Minimum number of convective plumes required for MCS candidate.
@@ -54,10 +56,8 @@ def detect_mcs_in_file(
         precip_file_path, precip_data_var, lat_name, lon_name, time_index
     )
 
-
     # Initialize lifted_index_regions as an array of zeros
     # This ensures it always has the correct shape and type for your output format.
-    lifted_index_threshold = -2
     lifted_index_regions = np.ones_like(precipitation, dtype=np.int32) * lifted_index_threshold
 
     # Step 1: Smooth the precipitation field
@@ -133,6 +133,5 @@ def detect_mcs_in_file(
         "convective_plumes": core_labels,
         "center_points": cluster_centers,
     }
-
     logger.info(f"MCS detection completed for {precip_file_path}.")
     return detection_result

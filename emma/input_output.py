@@ -268,7 +268,7 @@ def convert_precip_units(prec, target_unit="mm/h"):
         factor = 1000.0
     elif orig_units in ["kg m-2 s-1"]:
         factor = 3600.0
-    elif orig_units in ["mm", "mm/h", "mm/hr", "kg m-2"]:
+    elif orig_units in ["mm", "mm/h", "mm/hr", "kg m-2", "mm h-1"]:
         factor = 1.0
     else:
         print(
@@ -317,40 +317,83 @@ def load_precipitation_data(file_path, data_var, lat_name, lon_name, time_index=
     Load the dataset and select the specified time step, scaling the precipitation
     variable to units of mm/h for consistency with the detection threshold.
 
+    This function implements STRICT grid validation:
+    1. It loads the native grid coordinates (1D or 2D) based on lat_name/lon_name.
+    2. It explicitly searches for 2D auxiliary geographic coordinates (lat/lon) if the
+       native grid is 1D (e.g. CORDEX rotated grids).
+    3. It raises a ValueError if rotated dimensions are detected but no 2D geographic
+       coordinates are found, preventing silent georeferencing errors.
+
     Parameters:
     - file_path: Path to the NetCDF file.
     - data_var: Name of the precipitation variable.
-    - lat_name: Name of the latitude variable.
-    - lon_name: Name of the longitude variable.
+    - lat_name: Name of the latitude variable (native dimension).
+    - lon_name: Name of the longitude variable (native dimension).
     - time_index: Index of the time step to select.
 
     Returns:
     - ds: xarray Dataset for the selected time.
-    - lat2d: 2D array of latitudes.
-    - lon2d: 2D array of longitudes.
-    - lat: 1D array of latitudes.
-    - lon: 1D array of latitudes
+    - lat2d: 2D array of latitudes (True Geographic Coordinates).
+    - lon2d: 2D array of longitudes (True Geographic Coordinates).
+    - lat: 1D array of native latitudes (or y-indices).
+    - lon: 1D array of native longitudes (or x-indices).
     - prec: 2D DataArray of precipitation values (scaled to mm/h).
     """
     ds = xr.open_dataset(file_path)
     ds = ds.isel(time=time_index)  # Select the specified time step
     ds["time"] = ds["time"].values.astype("datetime64[ns]")
 
-    latitude = ds[lat_name].values
-    longitude = ds[lon_name].values
+    # 1. Load Native Coordinates (the dimensions of the data variable)
+    native_lat = ds[lat_name].values
+    native_lon = ds[lon_name].values
 
-    # Ensure lat and lon are 2D arrays.
-    if latitude.ndim == 1 and longitude.ndim == 1:
-        lon2d, lat2d = np.meshgrid(longitude, latitude)
-        lon, lat = longitude, latitude
+    # Initialize 2D coords as None
+    lat2d, lon2d = None, None
+
+    # 2. Determine 2D Geographic Coordinates (lat2d, lon2d)
+    if native_lat.ndim == 1 and native_lon.ndim == 1:
+        # Check specific standard names for 2D auxiliary coordinates.
+        # We do NOT blindly accept any 2D variable to avoid ambiguity.
+        aux_candidates = [("lat", "lon"), ("latitude", "longitude")]
+
+        for aux_lat_name, aux_lon_name in aux_candidates:
+            if aux_lat_name in ds and aux_lon_name in ds:
+                # STRICT CHECK: Dimensions must match the native grid shape (y, x)
+                expected_shape = (len(native_lat), len(native_lon))
+
+                if (ds[aux_lat_name].ndim == 2 and
+                    ds[aux_lat_name].shape == expected_shape):
+
+                    lat2d = ds[aux_lat_name].values
+                    lon2d = ds[aux_lon_name].values
+                    break  # Stop once valid coords are found
+
+        # 3. Strict Decision Logic (No Fallbacks)
+        if lat2d is None:
+            # Check if user inputs imply a rotated grid (e.g., 'rlat', 'rlon')
+            is_rotated_dim = "rlat" in lat_name or "rlon" in lon_name
+
+            if is_rotated_dim:
+                raise ValueError(
+                    f"STRICT MODE ERROR: Native dimensions are '{lat_name}'/'{lon_name}', "
+                    "implying a rotated grid. However, no valid 2D geographic coordinates "
+                    "(lat/lon or latitude/longitude) were found in the file. "
+                    "Aborting to prevent georeferencing errors."
+                )
+
+            # Only if we are sure it's NOT rotated do we create the meshgrid.
+            lon2d, lat2d = np.meshgrid(native_lon, native_lat)
+
+        # The 1D axes are the native ones (used for indexing/tracking)
+        lat = native_lat
+        lon = native_lon
+
     else:
-        lat2d, lon2d = latitude, longitude
-        # Assume a regular grid and extract 1D coordinates. Be carefull with CORDEX
-        lat = lat2d[:, 0]
-        lon = lon2d[0, :]
+        raise ValueError("Please provide the name of the 1D coordinate to avoid forcing a rotated grid on the regular lat lon grid")
 
     prec = ds[str(data_var)]
     prec_converted = convert_precip_units(prec)
+    
     return ds, lat2d, lon2d, lat, lon, prec_converted
 
 
@@ -358,6 +401,11 @@ def load_lifted_index_data(file_path, data_var, lat_name, lon_name, time_index=0
     """
     Load the dataset and select the specified time step, scaling the lifted_index data
     variable to units of K for consistency with the detection threshold.
+    
+    This function implements STRICT grid validation identical to load_precipitation_data:
+    1. Loads native coordinates.
+    2. Searches for 2D auxiliary coordinates if native coords are 1D.
+    3. Raises ValueError if rotated grid implied but 2D coords missing.
 
     Parameters:
     - file_path: Path to the NetCDF file.
@@ -368,37 +416,66 @@ def load_lifted_index_data(file_path, data_var, lat_name, lon_name, time_index=0
 
     Returns:
     - ds: xarray Dataset for the selected time.
-    - lat2d: 2D array of latitudes.
-    - lon2d: 2D array of longitudes.
-    - lat: 1D array of latitudes.
-    - lon: 1D array of latitudes
-    - prec: 2D DataArray of precipitation values (scaled to mm/h).
+    - lat2d: 2D array of latitudes (True Geographic Coordinates).
+    - lon2d: 2D array of longitudes (True Geographic Coordinates).
+    - lat: 1D array of native latitudes.
+    - lon: 1D array of native longitudes
+    - li_converted: 2D DataArray of lifted index values (scaled to K).
     """
     ds = xr.open_dataset(file_path)
     ds = ds.isel(time=time_index)  # Select the specified time step
     ds["time"] = ds["time"].values.astype("datetime64[ns]")
 
-    latitude = ds[lat_name].values
-    longitude = ds[lon_name].values
+    # 1. Load Native Coordinates
+    native_lat = ds[lat_name].values
+    native_lon = ds[lon_name].values
 
-    # Ensure lat and lon are 2D arrays.
-    if latitude.ndim == 1 and longitude.ndim == 1:
-        lon2d, lat2d = np.meshgrid(longitude, latitude)
-        lon, lat = longitude, latitude
+    # Initialize 2D coords
+    lat2d, lon2d = None, None
+
+    # 2. Determine 2D Geographic Coordinates
+    if native_lat.ndim == 1 and native_lon.ndim == 1:
+        aux_candidates = [("lat", "lon"), ("latitude", "longitude")]
+
+        for aux_lat_name, aux_lon_name in aux_candidates:
+            if aux_lat_name in ds and aux_lon_name in ds:
+                expected_shape = (len(native_lat), len(native_lon))
+                if (ds[aux_lat_name].ndim == 2 and
+                    ds[aux_lat_name].shape == expected_shape):
+                    
+                    lat2d = ds[aux_lat_name].values
+                    lon2d = ds[aux_lon_name].values
+                    break
+
+        # 3. Strict Decision Logic
+        if lat2d is None:
+            is_rotated_dim = "rlat" in lat_name or "rlon" in lon_name
+            if is_rotated_dim:
+                raise ValueError(
+                    f"STRICT MODE ERROR: Native dimensions are '{lat_name}'/'{lon_name}', "
+                    "implying a rotated grid. However, no valid 2D geographic coordinates "
+                    "(lat/lon or latitude/longitude) were found in the file. "
+                    "Aborting to prevent georeferencing errors."
+                )
+            
+            # Assume regular grid
+            lon2d, lat2d = np.meshgrid(native_lon, native_lat)
+
+        lat = native_lat
+        lon = native_lon
+
     else:
-        lat2d, lon2d = latitude, longitude
-        # Assume a regular grid and extract 1D coordinates. Be carefull with CORDEX
-        lat = lat2d[:, 0]
-        lon = lon2d[0, :]
+        raise ValueError("Please provide the name of the 1D coordinate to avoid forcing a rotated grid on the regular lat lon grid")
 
     li = ds[str(data_var)]
     # Convert the lifted index data to K using the separate conversion function.
     li_converted = convert_lifted_index_units(li, target_unit="K")
 
     # Remove all non relevant data variables from dataset
-    data_vars_list = [data_var for data_var in ds.data_vars]
-    data_vars_list.remove(data_var)
-    ds = ds.drop_vars(data_vars_list)
+    data_vars_list = [v for v in ds.data_vars]
+    if data_var in data_vars_list:
+        data_vars_list.remove(data_var)
+    ds = ds.drop_vars(data_vars_list, errors='ignore')
 
     return ds, lat2d, lon2d, lat, lon, li_converted
 
@@ -594,7 +671,7 @@ def save_detection_result(detection_result, output_dir, data_source):
 
     # Add CORDEX specific variables only if NOT regular
     if not is_regular:
-        data_vars["rotated_pole"] = ([], b"")
+        data_vars["rotated_pole"] = ([], 0)
 
     ds = xr.Dataset(
         data_vars=data_vars,
@@ -797,7 +874,7 @@ def save_tracking_result(
     }
 
     if not is_regular:
-        data_vars["rotated_pole"] = ([], b"")
+        data_vars["rotated_pole"] = ([], 0)
 
     ds = xr.Dataset(
         data_vars=data_vars,
