@@ -99,9 +99,9 @@
  
  ## Citation
  
- If you use the EMMA-Tracker in your research, please cite the following paper:
+ If you use the EMMA-Tracker in your research, please cite the following paper (currently still preprint):
  
- > TO BE ADDED
+ https://doi.org/10.22541/essoar.176798036.66459300/v2
  
  ## Improvments and suggestions
  If you encounter any errors or have suggestions for improvment, simply contact me or open um an issue directly in github.
