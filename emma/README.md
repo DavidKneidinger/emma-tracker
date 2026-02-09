@@ -52,13 +52,12 @@
  ### Post-Processing Filters (The Physics Check)
  These filters are applied *after* tracking to remove non-MCS artifacts (fronts, orographic noise).
  
- ```yaml
- run_postprocessing: True
- postprocessing_filters:
-   lifted_index_threshold: 0.0       # Reject systems in stable environments (Mean LI > 0 K)
-   track_straightness_threshold: 0.4 # Reject stationary/erratic systems (0 = erratic, 1 = straight)
-   max_area_volatility: 120000.0     # Reject unphysical growth spikes (e.g., frontal mergers)
- ```
+ | Parameter | Default | Scientific Meaning |
+ | :--- | :--- | :--- |
+ |  `lifted_index_threshold`|  0.0 |    | Reject systems in stable environments (Mean LI > 0 K)
+ |  `track_straightness_threshold`| 0.4 | Reject stationary/erratic systems (0 = erratic, 1 = straight)
+ |  `max_area_volatility`| 90000.0    | (km²) Reject unphysical growth/decay spikes (e.g., frontal mergers)
+ 
  
  ---
  
