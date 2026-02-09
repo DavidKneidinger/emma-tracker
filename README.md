@@ -54,20 +54,55 @@
  The behavior of the algorithm is controlled by a single YAML file. Key parameters include:
  
  ```yaml
- # Data Inputs
- precip_data_directory: "/path/to/imerg"
- lifted_index_data_directory: "/path/to/era5"
- 
- # Detection Thresholds
- heavy_precip_threshold: 6.82  # mm/h (e.g., 99th percentile)
- min_size_threshold: 10        # Minimum grid cells
- 
- # Post-Processing Filters
- run_postprocessing: True
- postprocessing_filters:
-   lifted_index_threshold: 0.0          # Reject systems in stable environments (Mean LI > 0)
-   track_straightness_threshold: 0.4    # Reject erratic/stationary systems
-   max_area_volatility: 90000.0        # Reject unphysical growth (frontal mergers)
+# config.yaml
+
+# Data
+precip_data_directory: "/path/to/hourly/precip"
+lifted_index_data_directory: "/path/to/hourly/lifted_index/"
+file_suffix: ".nc"
+detection_output_path: "/output/detection/"
+raw_tracking_output_dir: "/output/tracking_raw"  # path to the raw unfiltered tracking data
+filtered_tracking_output_dir: "/output/tracking/"  # path to the final tracking data
+
+precip_var_name: "precipitation"
+liting_index_var_name: "LI"
+lat_name: "rlat"
+lon_name: "rlon"
+data_source: "Information of your input data. This gets added to the attr of the output files"
+
+# Years and Months to process
+# empty list uses all available data in the specified directory
+years: []
+months: []
+
+# Detection parameter
+detection: True
+use_lifted_index: True
+min_size_threshold: 10  # min number of grid cells for an object to be detected
+heavy_precip_threshold: 6.8  # mm/h use 99th percentile of precip product
+moderate_precip_threshold: 1.0
+min_nr_plumes: 1  # number of heavy precipitation plums
+lifted_index_percentage_threshold: 0.1
+lifted_index_threshold: -2  # K
+
+# Tracking parameter
+tracking: True
+main_lifetime_thresh: 4  # min number of hours for an MCS in the mature state
+main_area_thresh: 3500  # min area for a system to be in the mature state
+nmaxmerge: 5  # maximum number of objects to merge in a single timestep
+
+# Post-processing / Filtering
+# This section controls the physics-based filtering logic
+postprocessing: False
+postprocessing_filters:
+  lifted_index_threshold: 1.5          # Keep systems with mean LI < 0.0 K
+  track_straightness_threshold: 0.4    # Keep systems with straightness > 0.4
+  max_area_volatility: 90000.0        # Keep systems with max volatility < 0.9e5
+
+# Other parameter
+use_multiprocessing: True
+number_of_cores: 20
+
  ```
  
  ## Output Data Structure
