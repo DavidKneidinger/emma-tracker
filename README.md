@@ -1,7 +1,7 @@
  # EMMA-Tracker: Evoluation-Based Mesoscale Convective System Model Assessment-Tracker
  
  **A robust detection and tracking algorithm for Mesoscale Convective Systems (MCS), optimized for climate model evaluation.**
- 
+ Since the algorithm is not yet peer-reviewed I would kindly ask you to get in touch with me (david.kneidinger@uni-graz.at) when you plan to use it.
  ---
  
  ## Overview
@@ -98,13 +98,17 @@
  ```
  
  ## Citation
- 
  If you use the EMMA-Tracker in your research, please cite the following paper (currently still preprint):
  
  https://doi.org/10.22541/essoar.176798036.66459300/v2
+
+ ## Reference Dataset
+ A European 27-year warm-season dataset of MCSs, based on IMERG precipitation and ERA5 derived lifted index:
+ https://zenodo.org/records/18234276 
+
  
  ## Improvments and suggestions
- If you encounter any errors or have suggestions for improvment, simply contact me or open um an issue directly in github.
+ If you encounter any errors or have suggestions for improvement, simply contact me or open um an issue directly in github.
 
  ## License
  
