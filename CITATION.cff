@@ -11,8 +11,8 @@ authors:
   given-names: "Douglas"
   orcid: "https://orcid.org/0000-0002-4076-0456"
 
-title: "A Process-Based Tracking Algorithm and the Resulting 27-Year Reference Dataset for Evaluating European Warm-Season Mesoscale Convective Systems in Climate Models"
+title: "EMMA-Tracker v1.0: A lifecycle-based algorithm for identifying and tracking mesoscale convective systems in observations and climate models "
 version: 1.0.0
-doi: still to add
-date-released: still to add 
+doi: 10.22541/essoar.176798036.66459300/v2
+date-released: still preprint
 url: "https://github.com/DavidKneidinger/emma-tracker"
