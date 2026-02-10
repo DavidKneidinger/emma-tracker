@@ -6,7 +6,7 @@ from typing import List, Optional
 # --- NESTED SECTIONS ---
 
 @dataclass
-class DetectionFilters:
+class DetectionParameters: # Fixed typo: Paramters -> Parameters
     use_lifted_index: bool
     min_size_threshold: int
     heavy_precip_threshold: float
@@ -16,7 +16,7 @@ class DetectionFilters:
     lifted_index_threshold: float
 
 @dataclass
-class TrackingFilters:
+class TrackingParameters: # Fixed typo: Paramters -> Parameters
     main_lifetime_thresh: int
     main_area_thresh: float
     nmaxmerge: int
@@ -56,8 +56,8 @@ class EmmaConfig:
     postprocessing: bool
 
     # 5. Nested Configs
-    detection_filters: DetectionFilters
-    tracking_filters: TrackingFilters
+    detection_parameters: DetectionParameters
+    tracking_parameters: TrackingParameters
     postprocessing_filters: PostProcessingFilters
 
     # 6. System
@@ -84,14 +84,15 @@ class EmmaConfig:
                 return dataclass_type(**section_data)
 
             # Build nested objects first
-            det_filters = pop_section('detection_filteres', DetectionFilters) # Note: 'filteres' matches your YAML typo
-            track_filters = pop_section('tracking_filters', TrackingFilters)
+            # These keys MUST match your YAML exactly
+            det_params = pop_section('detection_parameters', DetectionParameters)
+            track_params = pop_section('tracking_parameters', TrackingParameters)
             pp_filters = pop_section('postprocessing_filters', PostProcessingFilters)
 
             # Build main object
             return cls(
-                detection_filters=det_filters,
-                tracking_filters=track_filters,
+                detection_parameters=det_params,
+                tracking_parameters=track_params,
                 postprocessing_filters=pp_filters,
                 **data # Unpacks the rest of the flat keys
             )

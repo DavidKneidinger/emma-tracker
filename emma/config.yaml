@@ -21,7 +21,7 @@ months: [5, 6, 7, 8, 9]
 
 # Detection parameter
 detection: False
-detection_filters:
+detection_parameters:
   use_lifted_index: True
   min_size_threshold: 10  # min number of grid cells for an object to be detected
   heavy_precip_threshold: 6.8  # mm/h
@@ -32,7 +32,7 @@ detection_filters:
 
 # Tracking parameter
 tracking: False
-tracking_filters:
+tracking_parameters:
   main_lifetime_thresh: 4  # min number of hours for an MCS in the mature state
   main_area_thresh: 3500  # min area for a system to be in the mature state
   nmaxmerge: 5  # maximum number of objects to merge in a single timestep

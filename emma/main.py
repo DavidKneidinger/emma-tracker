@@ -10,7 +10,7 @@ import sys
 import logging
 import pandas as pd
 
-from .config import EmmaConfig  # <--- NEW IMPORT
+from .config import EmmaConfig
 from .detection_main import detect_mcs_in_file
 from .tracking_main import track_mcs
 from .input_output import (
@@ -165,7 +165,7 @@ def main():
         # Now, group the filtered list by year
         files_by_year = group_files_by_year(filtered_precip_files)
 
-        if cfg.detection_filters.use_lifted_index:
+        if cfg.detection_parameters.use_lifted_index:
             lifted_index_data_dir = cfg.lifted_index_data_directory
             lifted_index_data_var = cfg.lifted_index_var_name
 
@@ -229,7 +229,7 @@ def main():
         # Retrieve files for the current year (empty if detection is skipped)
         precip_file_list_year = files_by_year.get(year, [])
 
-        if cfg.detection_filters.use_lifted_index:
+        if cfg.detection_parameters.use_lifted_index:
             li_files_year = li_files_by_year.get(year, [])
         else:
             li_files_year = [] 
@@ -244,7 +244,7 @@ def main():
             matched_li_files = []
 
             # Perform Alignment
-            if cfg.detection_filters.use_lifted_index:
+            if cfg.detection_parameters.use_lifted_index:
                 logger.info("Aligning Precipitation and Lifted Index files...")
                 file_pairs, miss_li, miss_precip = align_files_by_hour(precip_file_list_year, li_files_year)
                 
@@ -282,12 +282,12 @@ def main():
                             lat_name,
                             lon_name,
                             # Pass strict values from nested config
-                            cfg.detection_filters.heavy_precip_threshold,
-                            cfg.detection_filters.lifted_index_threshold,
-                            cfg.detection_filters.moderate_precip_threshold,
-                            cfg.detection_filters.min_size_threshold,
-                            cfg.detection_filters.min_nr_plumes,
-                            cfg.detection_filters.lifted_index_percentage_threshold
+                            cfg.detection_parameters.heavy_precip_threshold,
+                            cfg.detection_parameters.lifted_index_threshold,
+                            cfg.detection_parameters.moderate_precip_threshold,
+                            cfg.detection_parameters.min_size_threshold,
+                            cfg.detection_parameters.min_nr_plumes,
+                            cfg.detection_parameters.lifted_index_percentage_threshold
                         )
                         for precip_file, li_file in zip(
                             matched_precip_files, matched_li_files
@@ -311,12 +311,12 @@ def main():
                         lat_name,
                         lon_name,
                         # Pass strict values from nested config
-                        cfg.detection_filters.heavy_precip_threshold,
-                        cfg.detection_filters.lifted_index_threshold,
-                        cfg.detection_filters.moderate_precip_threshold,
-                        cfg.detection_filters.min_size_threshold,
-                        cfg.detection_filters.min_nr_plumes,
-                        cfg.detection_filters.lifted_index_percentage_threshold
+                        cfg.detection_parameters.heavy_precip_threshold,
+                        cfg.detection_parameters.lifted_index_threshold,
+                        cfg.detection_parameters.moderate_precip_threshold,
+                        cfg.detection_parameters.min_size_threshold,
+                        cfg.detection_parameters.min_nr_plumes,
+                        cfg.detection_parameters.lifted_index_percentage_threshold
                     )
                     save_detection_result(
                         detection_result, detection_output_path, data_source
@@ -334,7 +334,7 @@ def main():
 
             year_detection_dir = os.path.join(detection_output_path, str(year))
             detection_results, grid_coords = load_individual_detection_files(
-                year_detection_dir, cfg.detection_filters.use_lifted_index
+                year_detection_dir, cfg.detection_parameters.use_lifted_index
             )
 
             # Apply month filter if specified
@@ -374,10 +374,10 @@ def main():
                 detection_results,
                 grid_coords,
                 # Pass strict values from nested config
-                cfg.tracking_filters.main_lifetime_thresh,
-                cfg.tracking_filters.main_area_thresh,
-                cfg.tracking_filters.nmaxmerge,
-                use_li_filter=cfg.detection_filters.use_lifted_index,
+                cfg.tracking_parameters.main_lifetime_thresh,
+                cfg.tracking_parameters.main_area_thresh,
+                cfg.tracking_parameters.nmaxmerge,
+                use_li_filter=cfg.detection_parameters.use_lifted_index,
             )
             logger.info(f"Tracking for year {year} finished.")
             print(f"Tracking for year {year} finished.")
@@ -414,7 +414,7 @@ def main():
 
 
         # --- 3e. POST-PROCESSING PHASE ---
-        if not cfg.detection_filters.use_lifted_index:
+        if not cfg.detection_parameters.use_lifted_index:
             print("Skipping postprocessing because of no lifted index...")
         else:
             lifted_index_data_var = cfg.lifted_index_var_name
