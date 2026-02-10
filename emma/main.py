@@ -436,9 +436,7 @@ def main():
                         lifted_index_data_var,
                         lat_name,
                         lon_name,
-                        cfg, # Pass the full config object
-                        cfg.use_multiprocessing,
-                        cfg.number_of_cores
+                        cfg
                     )
                 except Exception as e:
                     logger.error(f"Post-processing failed for year {year}: {e}")

@@ -3,483 +3,445 @@ emma/postprocessing.py
 
 Physics-based Filtering and Post-Processing for MCS Tracking.
 
-This module implements the final stage of the EMMA (Era-5 and IMERG MCS Algorithm) pipeline.
-It refines the raw tracking output by applying rigorous physical constraints to identify
-robust Mesoscale Convective Systems (MCSs).
-
-Methodology:
-1.  **Metric Extraction**: For every timestep of every track, key physical properties are extracted:
-    -   **Location**: Centroid coordinates directly from tracking output.
-    -   **Area**: Precise physical area (km²) calculated from the grid geometry.
-    -   **Instability**: Mean Lifted Index (LI) from ERA5 data within the MCS mask.
-2.  **Trajectory Analysis**: Tracks are aggregated to calculate lifetime statistics:
-    -   **Straightness**: Ratio of net displacement to total path length.
-    -   **Volatility**: Variance in area growth/decay to remove artifacts.
-    -   **Environment**: Lifetime-mean instability conditions.
-3.  **Filtering**: Tracks failing defined thresholds are discarded.
-4.  **Output Generation**: New NetCDF files are written containing only valid MCS tracks,
-    preserving CF-compliance and compression.
-
-References:
-    Kneidinger et al. (2025)
+This module implements the final stage of the tracking pipeline. It refines the 
+raw tracking results by:
+1.  **Extracting** physical properties (Area, Precip, LI) for every track timestep.
+2.  **Aggregating** these properties to calculate lifetime statistics and kinematics.
+3.  **Filtering** tracks based on physics-based thresholds (e.g., instability, straightness, area volatility).
+4.  **Consolidating** results into global CSV files.
+5.  **Restoring** Clean NetCDF files containing only the valid, accepted MCS tracks.
 """
 
 import os
 import glob
 import logging
 import concurrent.futures
-from typing import List, Set, Dict, Optional, Any
-
 import numpy as np
 import pandas as pd
 import xarray as xr
-from geopy.distance import great_circle
+from scipy.stats import skew
+from typing import List
 
 # Import project-specific helpers
-from .input_output import (
-    load_lifted_index_data,
-    save_dataset_to_netcdf
+from .input_output import load_lifted_index_data, load_precipitation_data
+from .postprocessing_helper_func import (
+    prepare_grid_dict,
+    calculate_grid_area_map, 
+    calculate_kinematics, 
+    calculate_area_change
 )
-from .tracking_helper_func import calculate_grid_area_map
 
 logger = logging.getLogger(__name__)
 
-
-def get_grid_dict_from_ds(ds: xr.Dataset) -> Dict[str, np.ndarray]:
+def update_global_csv(new_df: pd.DataFrame, file_path: str, time_col: str, year: int):
     """
-    Extracts coordinate arrays from a dataset to support precise area calculation.
+    Updates a global CSV file by appending new data and replacing existing data for the given year.
 
-    This function robustly handles different NetCDF coordinate naming conventions
-    (e.g., 'lat'/'lon', 'latitude'/'longitude', 'rlat'/'rlon') and constructs
-    2D meshgrids for regular grids if explicit 2D coordinates are missing.
+    This ensures the global file remains "one for all" without duplicating rows 
+    if a specific year is re-processed.
 
     Args:
-        ds (xr.Dataset): The tracking dataset containing coordinate variables.
-
-    Returns:
-        Dict[str, np.ndarray]: A dictionary containing:
-            - 'lat': 1D latitude array.
-            - 'lon': 1D longitude array.
-            - 'lat2d': 2D latitude grid.
-            - 'lon2d': 2D longitude grid.
-
-    Raises:
-        ValueError: If valid grid coordinates cannot be determined.
+        new_df (pd.DataFrame): The DataFrame containing data for the current processing year.
+        file_path (str): The full path to the global CSV file.
+        time_col (str): The name of the datetime column used to identify the year (e.g., 'datetime' or 'start_time').
+        year (int): The specific year being processed.
     """
-    lat_1d, lon_1d, lat_2d, lon_2d = None, None, None, None
+    if new_df.empty:
+        return
 
-    # 1. Attempt to find 1D coordinates using standard CF standard_names or common abbreviations
-    for lat_name in ['lat', 'latitude', 'rlat', 'y']:
-        if lat_name in ds.coords:
-            lat_1d = ds[lat_name].values
-            break
-    for lon_name in ['lon', 'longitude', 'rlon', 'x']:
-        if lon_name in ds.coords:
-            lon_1d = ds[lon_name].values
-            break
-            
-    # 2. Attempt to find existing 2D auxiliary coordinates
-    if 'latitude' in ds: lat_2d = ds['latitude'].values
-    if 'longitude' in ds: lon_2d = ds['longitude'].values
-    # Fallback for older file versions
-    if lat_2d is None and 'lat2d' in ds: lat_2d = ds['lat2d'].values
-    if lon_2d is None and 'lon2d' in ds: lon_2d = ds['lon2d'].values
+    # Ensure time column is datetime objects
+    new_df[time_col] = pd.to_datetime(new_df[time_col])
 
-    # 3. Construct 2D meshgrid if missing (Assumes Regular Grid geometry)
-    if lat_1d is not None and lon_1d is not None and lat_2d is None:
-        # Assuming 'ij' indexing (lat, lon) matches the mcs_id array shape
-        lat_2d, lon_2d = np.meshgrid(lat_1d, lon_1d, indexing='ij')
+    if os.path.exists(file_path):
+        # Read existing global data
+        existing_df = pd.read_csv(file_path)
+        existing_df[time_col] = pd.to_datetime(existing_df[time_col])
 
-    if lat_1d is None or lat_2d is None:
-        raise ValueError(f"Could not determine grid coordinates. Found coords: {list(ds.coords)}")
+        # Remove old entries for this specific year (Clean Overwrite)
+        existing_df = existing_df[existing_df[time_col].dt.year != year]
 
-    return {'lat': lat_1d, 'lon': lon_1d, 'lat2d': lat_2d, 'lon2d': lon_2d}
+        # Concatenate old data with new data
+        updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        updated_df = new_df
+
+    # Sort by time and track number for tidiness
+    if 'track_number' in updated_df.columns:
+        updated_df = updated_df.sort_values(by=[time_col, 'track_number'])
+    else:
+        updated_df = updated_df.sort_values(by=[time_col])
+
+    # Save back to CSV
+    updated_df.to_csv(file_path, index=False)
+    logger.info(f"Updated global record: {file_path}")
 
 
-def process_single_timestep(
-    tracking_file: str, 
-    available_li_files: List[str], 
-    config: dict
-) -> List[dict]:
+def process_single_timestep(file_path: str, li_files: List[str], precip_files: List[str], config: object, 
+                            precip_var_name: str, lifted_index_var_name: str, lat_name: str, lon_name: str) -> List[dict]:
     """
-    Worker function to extract physical metrics for all tracks in a single timestep.
+    Worker function to extract physical properties for all tracks in a single NetCDF file.
 
     Args:
-        tracking_file (str): Path to the raw tracking NetCDF file.
-        available_li_files (List[str]): List of paths to available Lifted Index files for the year.
-        config (dict): Configuration dictionary containing variable names and thresholds.
+        file_path (str): Path to the raw tracking NetCDF file.
+        li_files (List[str]): List of available Lifted Index file paths.
+        precip_files (List[str]): List of available Precipitation file paths.
+        config (object): Configuration object containing variable names and thresholds.
 
     Returns:
-        List[dict]: A list of dictionaries, one per active track, containing:
-            - 'track_id': Unique integer ID of the MCS.
-            - 'time': Timestamp of the observation.
-            - 'area_km2': Physical area of the system.
-            - 'mean_li': Mean Lifted Index within the system mask.
-            - 'lat': Center latitude.
-            - 'lon': Center longitude.
-            Returns an empty list if processing fails or no tracks are present.
+        List[dict]: A list of dictionaries, where each dictionary contains the extracted 
+                    properties for a single track at this timestep. Returns an empty list 
+                    if no tracks are found or errors occur.
     """
-    try:
-        results = []
-        with xr.open_dataset(tracking_file) as ds_track:
-            if ds_track.time.size == 0:
-                return []
-            time_val = pd.to_datetime(ds_track.time.values[0])
-            
-            # --- 1. Load Active Track Metadata ---
-            if 'active_track_id' not in ds_track:
-                return []
-            
-            active_ids = ds_track['active_track_id'].values
-            if len(active_ids) == 0:
-                return []
-
-            # Retrieve coordinates directly from tracking output
-            # These are pre-calculated during the tracking phase and should be valid.
-            active_lats = ds_track['active_track_lat'].values
-            active_lons = ds_track['active_track_lon'].values
-            
-            mcs_map = ds_track['mcs_id'].values[0]
-            
-            # Data Integrity Check
-            if len(active_ids) != len(active_lats):
-                logger.error(
-                    f"Shape mismatch in {tracking_file}: IDs ({len(active_ids)}) vs Lats ({len(active_lats)})"
-                )
-                return []
-
-            # --- 2. Calculate Precise Grid Area ---
-            # Calculate the physical area (km2) for every pixel in the grid based on latitude.
-            try:
-                grid_dict = get_grid_dict_from_ds(ds_track)
-                area_map_km2 = calculate_grid_area_map(grid_dict)
-            except Exception as e:
-                logger.error(f"Grid Area Calculation Failed for {tracking_file}: {e}")
-                return []
-
-            # --- 3. Locate and Load Environmental Data (Lifted Index) ---
-            year_str = time_val.strftime("%Y")
-            month_str = time_val.strftime("%m")
-            day_str = time_val.strftime("%d")
-            hour_str = time_val.strftime("%H")
-            date_str = f"{year_str}{month_str}{day_str}"
-            
-            # Efficiently find the matching file in the pre-loaded list
-            matching_files = [
-                f for f in available_li_files 
-                if date_str in os.path.basename(f) and hour_str in os.path.basename(f)
-            ]
-
-            li_data_values = None
-            if matching_files:
-                li_file_path = sorted(matching_files)[0]
-                try:
-                    # Load data using the project's standard loader.
-                    # Note: We do NOT convert units here; we use the raw values (Kelvin/Difference).
-                    # We strictly use 'lat'/'lon' as verified by file inspection.
-                    _, _, _, _, _, li_da = load_lifted_index_data(
-                        li_file_path, 
-                        config['liting_index_var_name'], 
-                        lat_name="lat", 
-                        lon_name="lon",
-                        time_index=0 
-                    )
-                    li_data_values = li_da.values
-
-                except Exception as e:
-                    logger.warning(f"Failed to load LI file {li_file_path}: {e}")
-                    li_data_values = None
-
-            # --- 4. Extract Metrics for Each Track ---
-            for idx, tid in enumerate(active_ids):
-                # Create boolean mask for the current system
-                mask = (mcs_map == tid)
-                area_cells = np.sum(mask)
-                
-                # Skip "Ghost" Tracks:
-                # If a track ID is listed in metadata but has 0 pixels in the map 
-                # (e.g., just terminated or formed), it should not be processed.
-                if area_cells == 0:
-                    continue
-
-                # A. Physical Area
-                # Sum the pre-calculated area of all pixels belonging to this system
-                if area_map_km2.shape == mask.shape:
-                    area_km2 = np.sum(area_map_km2[mask])
-                else:
-                    # Robust fallback in rare case of shape mismatch
-                    area_km2 = area_cells * config.get('grid_cell_area_km2', 121.0)
-                
-                # B. Instability (Lifted Index)
-                mean_li = np.nan
-                if li_data_values is not None:
-                    if li_data_values.shape == mask.shape:
-                        li_vals = li_data_values[mask]
-                        # Calculate mean only if valid data exists (avoid RuntimeWarning)
-                        if len(li_vals) > 0 and not np.all(np.isnan(li_vals)):
-                            mean_li = np.nanmean(li_vals)
-                
-                # C. Location
-                center_lat = active_lats[idx]
-                center_lon = active_lons[idx]
-
-                results.append({
-                    'track_id': tid,
-                    'time': time_val,
-                    'area_km2': area_km2,
-                    'mean_li': mean_li,
-                    'lat': center_lat,
-                    'lon': center_lon
-                })
-        return results
-
-    except Exception as e:
-        logger.error(f"Error processing {tracking_file}: {e}")
-        return []
-
-
-def filter_tracks(df_timesteps: pd.DataFrame, config: dict) -> Set[int]:
-    """
-    Applies physical filtering criteria to the aggregated track histories.
-
-    Filters implemented:
-    1.  **Instability**: The track must exist in an unstable environment (Lifted Index threshold).
-    2.  **Volatility**: The track's area growth/decay must be physically realistic (removes artifacts).
-    3.  **Straightness**: The track must follow a somewhat linear path (removes erratic 'jumping' tracks).
-
-    Args:
-        df_timesteps (pd.DataFrame): DataFrame containing metrics for all timesteps of all tracks.
-        config (dict): Configuration dictionary with filter thresholds.
-
-    Returns:
-        Set[int]: A set of valid Track IDs that passed all filters.
-    """
-    grouped = df_timesteps.groupby('track_id')
-    valid_ids = []
-    thresholds = config['postprocessing_filters']
+    os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
+    results = []
     
-    # Statistics counters for logging
-    total_tracks = len(grouped)
-    rejected_li = 0
-    rejected_volatility = 0
-    rejected_straightness = 0
-    kept_nan_li = 0
-    
-    for tid, group in grouped:
-        group = group.sort_values('time')
+    with xr.open_dataset(file_path, engine='netcdf4') as ds:
+        # Check for tracks
+        if 'active_track_id' not in ds:
+            return []
         
-        # --- Filter 1: Environmental Instability (Lifted Index) ---
-        lifetime_mean_li = group['mean_li'].mean()
-        
-        # Handling Missing Data:
-        # If LI data is missing (NaN), we give the track the benefit of the doubt and keep it.
-        # We only reject if we have valid data confirming the environment is stable.
-        if not np.isnan(lifetime_mean_li):
-            if lifetime_mean_li >= thresholds['lifted_index_threshold']:
-                rejected_li += 1
-                continue 
-        else:
-            kept_nan_li += 1
+        active_ids = ds['active_track_id'].values
+        if len(active_ids) == 0:
+            return []
 
-        # --- Filter 2: Area Volatility ---
-        # Single-timestep tracks cannot assess volatility or movement; usually rejected implicitly.
-        if len(group) < 2:
-            rejected_volatility += 1
-            continue 
+        time_val = ds['time'].values[0]
+        time_str = str(time_val)
 
-        areas = group['area_km2'].values
-        prev_area = areas[:-1]
-        curr_area = areas[1:]
+        ds = ds.isel(time=0)
+        # --- 1. Grid & Area Calculation ---
+        # Extract grid coordinates robustly (handling 1D/2D and different var names)
+        grid_dict = prepare_grid_dict(ds)
         
-        # Volatility metric: Normalized squared area change
-        diff_sq = (curr_area - prev_area)**2
-        mean_area_step = (curr_area + prev_area) / 2.0
+        # Calculate cell areas (km2) handling Regular vs Irregular grids
+        area_map_km2 = calculate_grid_area_map(grid_dict)
         
-        # Use float division and handle division by zero (e.g., very small systems)
-        volatility = np.divide(
-            diff_sq, 
-            mean_area_step, 
-            out=np.zeros_like(diff_sq, dtype=float), 
-            where=mean_area_step!=0
-        )
-        
-        max_volatility = np.max(volatility)
-        
-        if max_volatility > thresholds['max_area_volatility']:
-            rejected_volatility += 1
-            continue 
+        # --- 2. Environmental Data Loading ---
+        t_pd = pd.to_datetime(time_val)
+        time_key = t_pd.strftime("%Y%m") # Match monthly file pattern
 
-        # --- Filter 3: Track Straightness ---
-        lats = group['lat'].values
-        lons = group['lon'].values
+        # Load Lifted Index (using shared helper)
+        li_file = next((f for f in li_files if time_key in os.path.basename(f)), None)
         
-        # Robustness: Filter out NaNs or Zeros (invalid coordinates)
-        valid_coords = (np.isfinite(lats) & np.isfinite(lons) & (lats != 0) & (lons != 0))
-        
-        if np.sum(valid_coords) < 2:
-            rejected_straightness += 1
-            continue
-
-        lats_clean = lats[valid_coords]
-        lons_clean = lons[valid_coords]
-        
-        # Calculate total path length (sum of segments)
-        total_dist = 0.0
-        for i in range(len(lats_clean)-1):
-            dist = great_circle((lats_clean[i], lons_clean[i]), (lats_clean[i+1], lons_clean[i+1])).kilometers
-            total_dist += dist
+        current_li = None  # Initialize as None
+        if li_file:        # Only load if file exists
+            current_li = load_lifted_index_data(li_file, lifted_index_var_name, lat_name, lon_name)[-1]
             
-        # Calculate net displacement (start to end)
-        net_dist = great_circle((lats_clean[0], lons_clean[0]), (lats_clean[-1], lons_clean[-1])).kilometers
+        # Load Precipitation 
+        precip_file = next((f for f in precip_files if time_key in os.path.basename(f)), None)
+
+        current_precip = None
+        if precip_file:
+            current_precip = load_precipitation_data(precip_file, precip_var_name, lat_name, lon_name)[-1]
+
         
-        # Straightness ratio [0-1]
-        straightness = (net_dist / total_dist) if total_dist > 1e-6 else 1.0
-        
-        if straightness <= thresholds['track_straightness_threshold']:
-            rejected_straightness += 1
-            continue 
+        # Skip detailed physics if environmental data is missing
+        if current_li is None or current_precip is None:
+            logger.warning(f"Skipping physics for {time_str} (missing env data)")
+            return []
+
+        # --- 3. Property Extraction per Track ---
+        mcs_map = ds['mcs_id'].values
+
+        for track_id in active_ids:
+            mask = (mcs_map == track_id)
+            if not np.any(mask):
+                continue
             
-        valid_ids.append(tid)
+            # Centroid
+            idx = np.where(ds['active_track_id'].values == track_id)[0][0]
+            center_lat = ds['active_track_lat'].values[idx]
+            center_lon = ds['active_track_lon'].values[idx]
+            
+            # Geometric Properties
+            track_area = np.sum(area_map_km2[mask])
+            
+            # Physical Properties
+            mean_li = np.nanmean(current_li.values[mask])
+            p_vals = current_precip.values[mask]
+            mean_precip = np.nanmean(p_vals)
+            max_precip = np.nanmax(p_vals)
+            
+            precip_skew = np.nan
+            if len(p_vals) > 5:
+                precip_skew = skew(p_vals, nan_policy='omit')
+            
+            # Convective / Stratiform Partitioning
+            detection_parameters = config.detection_parameters
+            conv_thresh = detection_parameters.heavy_precip_threshold
 
-    logger.info(f"--- Track Filtering Statistics ---")
-    logger.info(f"Total unique tracks processed: {total_tracks}")
-    logger.info(f"  - Rejected by LI Stability: {rejected_li}")
-    logger.info(f"  - Rejected by Volatility/Duration: {rejected_volatility}")
-    logger.info(f"  - Rejected by Straightness: {rejected_straightness}")
-    logger.info(f"  - Kept with Missing Data (NaN): {kept_nan_li}")
-    logger.info(f"  - Total Valid MCS Tracks: {len(valid_ids)}")
+            conv_mask = (p_vals > conv_thresh)
+            conv_area = np.sum(area_map_km2[mask][conv_mask])
+            strat_area = track_area - conv_area
 
-    return set(valid_ids)
+            results.append({
+                'track_number': int(track_id),
+                'datetime': time_str,
+                'center_lat': center_lat,
+                'center_lon': center_lon,
+                'area_km2': track_area,
+                'mean_li': mean_li,
+                'mean_precip': mean_precip,
+                'max_precip': max_precip,
+                'precip_skew': precip_skew,
+                'convective_area_km2': conv_area,
+                'stratiform_area_km2': strat_area
+            })
 
+    return results
 
-def apply_filter_to_files(raw_files: List[str], valid_ids: Set[int], output_dir: str):
+def restore_filtered_files(raw_files: List[str], valid_ids: set, output_dir: str, input_root_dir: str):
     """
-    Applies the valid ID mask to raw tracking files and saves the filtered output.
+    Generates the final NetCDF files containing only valid MCS tracks.
+
+    Reads the raw tracking files, masks out any track IDs that are not in the 
+    `valid_ids` set, and saves the cleaned file to the output directory.
 
     Args:
         raw_files (List[str]): List of paths to raw tracking NetCDF files.
-        valid_ids (Set[int]): Set of track IDs to retain.
-        output_dir (str): Directory where filtered files will be saved.
+        valid_ids (set): Set of track IDs that passed the filtering criteria.
+        output_dir (str): Directory where the final NetCDF files will be saved.
     """
-    logger.info(f"Writing {len(raw_files)} filtered files to {output_dir}...")
-    
-    for f in raw_files:
-        try:
-            with xr.open_dataset(f) as ds:
-                ds.load()
-                
-                # 1. Mask Gridded Variables
-                # Set pixel values to 0 if the track ID is not in the valid set
-                id_vars = ['mcs_id', 'robust_mcs_id', 'mcs_id_merge_split']
-                for var in id_vars:
-                    if var in ds:
-                        data = ds[var].values
-                        mask_invalid = ~np.isin(data, list(valid_ids))
-                        # Only mask positive IDs (tracks), leaving background (0) as is
-                        data[mask_invalid & (data > 0)] = 0
-                        ds[var].values = data
-                
-                # 2. Filter Tabular Variables (Active Tracks)
-                # Remove rows from the track metadata if the ID is invalid
-                if 'active_track_id' in ds:
-                    active_ids = ds['active_track_id'].values
-                    valid_indices = np.isin(active_ids, list(valid_ids))
-                    ds = ds.isel(tracks=valid_indices)
+    os.makedirs(output_dir, exist_ok=True)
 
-                # 3. Prepare Output Path
-                time_val = pd.to_datetime(ds.time.values[0])
-                year_str = time_val.strftime("%Y")
-                month_str = time_val.strftime("%m")
+    for f_path in raw_files:
+        with xr.open_dataset(f_path, engine='netcdf4') as ds:
+            # 1. Handle files with NO tracks (e.g. empty timesteps)
+            if 'active_track_id' not in ds:
+                continue
+            
+            # 2. Safely get IDs (Handling Scalar vs Array)
+            #    We use .values to get numpy array, then atleast_1d to ensure iteration works
+            raw_ids = ds['active_track_id'].values
+            all_file_ids = np.atleast_1d(raw_ids)
+            
+            # 3. Identify which tracks in THIS file are valid
+            #    (valid_ids contains ALL valid tracks for the whole year)
+            valid_tracks_in_file = [tid for tid in all_file_ids if tid in valid_ids]
+            
+            # If the file contains tracks, but NONE are valid, we skip saving it.
+            if not valid_tracks_in_file:
+                continue
+
+            # 4. Filter the Dataset (Dimensions/Variables)
+            #    We need to check if 'active_track_id' is a dimensioned array or a scalar
+            track_dims = ds['active_track_id'].dims
+            
+            if len(track_dims) == 0:
+                # SCALAR CASE: File has exactly 1 track, and it IS valid (checked above).
+                # No slicing needed because the dimension doesn't exist.
+                ds_filtered = ds.copy()
+            else:
+                # ARRAY CASE: File has multiple tracks (or 1 track with explicit dim).
+                # We dynamically find the dimension name (usually 'active_track' or 'tracks')
+                dim_name = track_dims[0]
                 
-                out_subdir = os.path.join(output_dir, year_str, month_str)
-                os.makedirs(out_subdir, exist_ok=True)
+                # Get integer indices of the valid tracks
+                # np.isin returns boolean mask, np.where converts to indices
+                valid_indices = np.where(np.isin(all_file_ids, valid_tracks_in_file))[0]
                 
-                out_name = os.path.basename(f)
-                out_path = os.path.join(out_subdir, out_name)
+                # Slice the dataset along that dimension
+                ds_filtered = ds.isel({dim_name: valid_indices})
+            
+            # 5. Update the Spatial Mask (final_labeled_regions)
+            #    Set pixels of REJECTED tracks to 0.
+            if 'final_labeled_regions' in ds_filtered:
+                mask_da = ds_filtered['final_labeled_regions']
+                mask_vals = mask_da.values # Numpy array
                 
-                # 4. Update Metadata
-                ds.attrs['postprocessing_level'] = 'Filtered (LI, Straightness, Volatility)'
-                ds.attrs['history'] += f"; Post-processed on {pd.Timestamp.now().strftime('%Y-%m-%d')}"
+                # Create a mask where:
+                # 1. Pixel value is in valid_tracks_in_file -> Keep it
+                # 2. Pixel value is NOT in valid_tracks_in_file -> Set to 0
+                new_mask = np.where(np.isin(mask_vals, valid_tracks_in_file), mask_vals, 0)
                 
-                # 5. Save with standardized encoding
-                save_dataset_to_netcdf(ds, out_path)
-                
-        except Exception as e:
-            logger.error(f"Failed to filter/save {f}: {e}")
+                # Assign back to the dataset safely
+                # (We use .values[:] to update the underlying numpy array in-place)
+                ds_filtered['final_labeled_regions'].values[:] = new_mask
+            
+            # --- 6. SAVE WITH MIRRORED STRUCTURE ---
+            
+            # Calculate the structure we want to preserve (e.g. "1998/05/file.nc")
+            # We subtract 'input_root_dir' from the full 'f_path'
+            relative_structure = os.path.relpath(f_path, input_root_dir)
+            
+            # Construct the new full path
+            out_path = os.path.join(output_dir, relative_structure)
+            
+            # Create the necessary sub-folders (e.g. .../tracking/1998/05)
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            
+            ds_filtered.to_netcdf(out_path)
 
 
-def run_postprocessing_year(
-    year: int, 
-    raw_tracking_dir: str, 
-    filtered_output_dir: str, 
-    config: dict, 
-    n_cores: int
-):
+def run_postprocessing_year(year: int, raw_tracking_output_dir: str, tracking_output_dir: str, precip_data_var: str, lifted_index_data_var: str, 
+                            lat_name: str, lon_name: str, config: object):
     """
-    Orchestrates the post-processing workflow for a specific year.
+    Orchestrates the post-processing pipeline for a specific year.
 
-    Workflow:
-    1.  Index all raw tracking files and Lifted Index files.
-    2.  Extract physical metrics for all tracks in parallel.
-    3.  Aggregate metrics and determine valid tracks based on filters.
-    4.  Write filtered NetCDF files to the output directory.
+    This function:
+    1.  Extracts physical properties for the given year.
+    2.  Aggregates properties into track summaries.
+    3.  **Updates the global CSV files** located in the root post-processing directory.
+    4.  Filters tracks based on configuration thresholds.
+    5.  Restores valid tracks into clean NetCDF files (stored in the yearly folder).
 
     Args:
-        year (int): The year to process.
-        raw_tracking_dir (str): Directory containing raw tracking output.
-        filtered_output_dir (str): Directory to save final filtered files.
-        config (dict): Configuration dictionary.
-        n_cores (int): Number of CPU cores for parallel processing.
+        year (int): The year being processed.
+        raw_tracking_output_dir (str): Input directory containing raw tracking NetCDFs.
+        tracking_output_dir (str): Output directory for the final NetCDFs (e.g., .../2020/).
+        config (object): Global configuration object.
     """
-    logger.info(f"--- Starting Post-Processing for Year {year} ---")
+    logger.info(f"--- Starting Post-Processing for Year: {year} ---")
+    year_data_dir = os.path.join(raw_tracking_output_dir, str(year))
     
-    # 1. Find Raw Tracking Files
-    search_pattern = os.path.join(raw_tracking_dir, str(year), "**", "tracking_*.nc")
-    raw_files = sorted(glob.glob(search_pattern, recursive=True))
+    if not os.path.exists(year_data_dir):
+        raise FileNotFoundError(f"Raw tracking directory for year {year} not found: {year_data_dir}")
+
+    # Recursive search to find files in subdirectories (e.g., 2020/08/*.nc)
+    raw_files = sorted(glob.glob(os.path.join(year_data_dir, "**", "*.nc"), recursive=True))
+    
     if not raw_files:
-        logger.warning(f"No raw tracking files found for {year} in {raw_tracking_dir}")
-        return
+        raise FileNotFoundError(f"No .nc files found in {year_data_dir}")
+    
+    logger.info(f"Found {len(raw_files)} raw tracking files in {year_data_dir}")
 
-    # 2. Find All Lifted Index Files
-    # We index files once to avoid repeated filesystem calls in workers
-    li_dir = config['lifted_index_data_directory']
-    all_li_files = glob.glob(os.path.join(li_dir, "**", f"*{config['file_suffix']}"), recursive=True)
-    if not all_li_files:
-         logger.warning("No Lifted Index files found. Metrics will be NaN, but processing will continue.")
-         all_li_files = []
+    
+    # Ensure yearly output directory exists for NetCDFs
+    os.makedirs(tracking_output_dir, exist_ok=True)
 
-    # Filter LI files for the current year to optimize search speed
-    li_files_year = [f for f in all_li_files if str(year) in f]
-    logger.info(f"Found {len(li_files_year)} LI files for year {year}.")
+    # 2. Locate Environmental Data (LI and Precip)
+    li_dir = config.lifted_index_data_directory
+    precip_dir = config.precip_data_directory
 
-    # 3. Extract Metrics (Parallel Execution)
-    logger.info("Extracting track metrics...")
+    all_li = sorted(glob.glob(os.path.join(li_dir, "**", "*.nc"), recursive=True))
+    all_precip = sorted(glob.glob(os.path.join(precip_dir, "**", "*.nc"), recursive=True))
+    
+    # Filter files relevant for this year to optimize search
+    li_files_year = [f for f in all_li if str(year) in os.path.basename(f)]
+    precip_files_year = [f for f in all_precip if str(year) in os.path.basename(f)]
+
+   # --- STEP 1: Extract Timestep Properties ---
+    logger.info("STEP 1: Extracting timestep properties...")
     all_timestep_rows = []
     
-    with concurrent.futures.ProcessPoolExecutor(max_workers=n_cores) as executor:
-        futures = {
-            executor.submit(process_single_timestep, f, li_files_year, config): f 
-            for f in raw_files
-        }
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
-            if result:
-                all_timestep_rows.extend(result)
+    if config.use_multiprocessing and config.number_of_cores > 1:
+        logger.info(f"Running extraction in PARALLEL mode ({config.number_of_cores} cores)...")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=config.number_of_cores) as executor:
+            futures = {
+                executor.submit(
+                    process_single_timestep, 
+                    f, 
+                    li_files_year, 
+                    precip_files_year, 
+                    config,
+                    precip_data_var,       # Passed from run_postprocessing_year args
+                    lifted_index_data_var, # Passed from run_postprocessing_year args
+                    lat_name,              # Passed from run_postprocessing_year args
+                    lon_name               # Passed from run_postprocessing_year args
+                ): f 
+                for f in raw_files
+            }
             
-    if not all_timestep_rows:
-        logger.warning("No valid metrics extracted. Skipping filtering.")
-        return
-        
-    df_timesteps = pd.DataFrame(all_timestep_rows)
-    
-    # 4. Filter Tracks
-    logger.info("Applying physical filters...")
-    valid_ids = filter_tracks(df_timesteps, config)
-    
-    # 5. Save Filtered Data
-    if valid_ids:
-        apply_filter_to_files(raw_files, valid_ids, filtered_output_dir)
+            for future in concurrent.futures.as_completed(futures):
+                res = future.result()
+                if res:
+                    all_timestep_rows.extend(res)
     else:
-        logger.warning("0 Valid IDs found. Skipping file writing.")
+        logger.info("Running extraction in SERIAL mode...")
+        for f in raw_files:
+            res = process_single_timestep(
+                f, 
+                li_files_year, 
+                precip_files_year, 
+                config,
+                precip_data_var,
+                lifted_index_data_var,
+                lat_name,
+                lon_name
+            )
+            if res:
+                all_timestep_rows.extend(res)
+
+    df_timesteps = pd.DataFrame(all_timestep_rows)
+    df_timesteps['datetime'] = pd.to_datetime(df_timesteps['datetime'])
+    df_timesteps = df_timesteps.sort_values(by=['datetime', 'track_number'])
     
-    logger.info(f"Post-processing for {year} complete.")
+    # Update GLOBAL Timestep CSV
+    csv_timestep_path = os.path.join(tracking_output_dir, 'mcs_timestep_properties.csv')
+    update_global_csv(df_timesteps, csv_timestep_path, 'datetime', year)
+
+    # --- STEP 2: Aggregate & Analyze ---
+    logger.info("STEP 2: Analyzing track properties...")
+    
+    aggregations = {
+        'datetime': ['min', 'max', 'count'],
+        'area_km2': ['mean', 'max'],
+        'mean_li': ['mean'],
+        'mean_precip': ['mean'],
+        'max_precip': ['max'],
+        'convective_area_km2': ['mean'],
+        'stratiform_area_km2': ['mean'],
+        'precip_skew': ['mean']
+    }
+    
+    # GroupBy & Aggregation
+    df_summary = df_timesteps.groupby('track_number').agg(aggregations)
+    df_summary.columns = ['_'.join(col).strip() for col in df_summary.columns.values]
+    
+    rename_map = {
+        'datetime_min': 'start_time',
+        'datetime_max': 'end_time',
+        'datetime_count': 'duration_steps',
+        'area_km2_mean': 'lifetime_mean_area_km2',
+        'area_km2_max': 'max_area_km2',
+        'mean_li_mean': 'lifetime_mean_LI',
+        'mean_precip_mean': 'lifetime_mean_precip',
+        'max_precip_max': 'peak_max_precip'
+    }
+    df_summary = df_summary.rename(columns=rename_map)
+    
+    # Calculate Kinematics & Volatility
+    kinematics = df_timesteps.groupby('track_number').apply(calculate_kinematics)
+    volatility = df_timesteps.groupby('track_number').apply(calculate_area_change)
+    
+    df_summary = df_summary.merge(kinematics, on='track_number')
+    df_summary = df_summary.merge(volatility, on='track_number')
+
+    # Update GLOBAL Summary CSV
+    csv_summary_path = os.path.join(tracking_output_dir, 'mcs_track_summary.csv')
+    update_global_csv(df_summary, csv_summary_path, 'start_time', year)
+
+    # --- STEP 3: Filter ---
+    logger.info("STEP 3: Filtering tracks...")
+    
+    filters = config.postprocessing_filters
+    thresh_li = filters.lifted_index_threshold
+    thresh_straight = filters.track_straightness_threshold
+    thresh_vol = filters.max_area_volatility
+    
+    logger.info(f"Filtering Criteria: LI < {thresh_li}, Straightness > {thresh_straight}, Volatility < {thresh_vol}")
+
+    
+    # Filter Logic
+    accepted_mask = (
+        (df_summary['lifetime_mean_LI'] < thresh_li) &
+        (df_summary['track_straightness'] > thresh_straight) &
+        (df_summary['max_area_volatility'] < thresh_vol)
+    )
+    
+    df_accepted = df_summary[accepted_mask]
+    df_rejected = df_summary[~accepted_mask]
+    
+    # Update GLOBAL Accepted/Rejected CSVs
+    update_global_csv(df_accepted, os.path.join(tracking_output_dir, 'mcs_track_summary_ACCEPTED.csv'), 'start_time', year)
+    update_global_csv(df_rejected, os.path.join(tracking_output_dir, 'mcs_track_summary_REJECTED.csv'), 'start_time', year)
+    
+    valid_ids = set(df_accepted.index.tolist())
+    logger.info(f"Accepted: {len(valid_ids)}, Rejected: {len(df_rejected)}")
+
+    # --- STEP 4: Restore ---
+    logger.info("STEP 4: Restoring filtered NetCDF files...")
+    if valid_ids:
+        restore_filtered_files(raw_files, valid_ids, tracking_output_dir, raw_tracking_output_dir)
+        logger.info(f"Restoration complete in {tracking_output_dir}")
+    else:
+        logger.warning("No tracks passed filtering for this year.")
