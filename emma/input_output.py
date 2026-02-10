@@ -31,7 +31,7 @@ def align_files_by_hour(precip_files, li_files):
         """
         try:
             # decode_times=True is default, but explicit is safer
-            with xr.open_dataset(filepath) as ds:
+            with xr.open_dataset(filepath, engine='netcdf4') as ds:
                 if "time" in ds and ds["time"].size > 0:
                     t = ds["time"].values[0]
                     # Convert to YYYYMMDDHH string
@@ -442,7 +442,7 @@ def load_precipitation_data(file_path, data_var, lat_name, lon_name, time_index=
     - lon: 1D array of native longitudes (or x-indices).
     - prec: 2D DataArray of precipitation values (scaled to mm/h).
     """
-    ds = xr.open_dataset(file_path)
+    ds = xr.open_dataset(file_path, engine='netcdf4')
     ds = ds.isel(time=time_index)  # Select the specified time step
     ds["time"] = ds["time"].values.astype("datetime64[ns]")
 
@@ -525,7 +525,7 @@ def load_lifted_index_data(file_path, data_var, lat_name, lon_name, time_index=0
     - lon: 1D array of native longitudes
     - li_converted: 2D DataArray of lifted index values (scaled to K).
     """
-    ds = xr.open_dataset(file_path)
+    ds = xr.open_dataset(file_path, engine='netcdf4')
     ds = ds.isel(time=time_index)  # Select the specified time step
     ds["time"] = ds["time"].values.astype("datetime64[ns]")
 
@@ -617,7 +617,7 @@ def load_individual_detection_files(year_input_dir, use_li_filter):
 
     for filepath in filepaths:
         try:
-            with xr.open_dataset(filepath) as ds:
+            with xr.open_dataset(filepath, engine='netcdf4') as ds:
                 time_val = ds["time"].values[0]
 
                 if shared_coords is None:
