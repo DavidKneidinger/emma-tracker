@@ -10,6 +10,7 @@ import sys
 import logging
 import pandas as pd
 
+from .config import EmmaConfig  # <--- NEW IMPORT
 from .detection_main import detect_mcs_in_file
 from .tracking_main import track_mcs
 from .input_output import (
@@ -91,51 +92,33 @@ def main():
     logger = logging.getLogger(__name__)
     args = parse_arguments()
 
-    with open(args.config, "r") as f:
-        config = yaml.safe_load(f)
+    # LOAD CONFIGURATION STRICTLY
+    try:
+        cfg = EmmaConfig.load(args.config)
+    except Exception as e:
+        logger.critical(f"Failed to load configuration: {e}")
+        sys.exit(1)
 
-    # General parameters
-    precip_data_dir = config["precip_data_directory"]
-    file_suffix = config["file_suffix"]
-    detection_output_path = config["detection_output_path"]
-    raw_tracking_output_dir = config["raw_tracking_output_dir"]  # raw tracking output
-    tracking_output_dir = config["filtered_tracking_output_dir"]  # final filtered tracking output
-    precip_data_var = config["precip_var_name"]
-    lat_name = config["lat_name"]
-    lon_name = config["lon_name"]
-    data_source = config["data_source"]
+    # General parameters (Access via cfg object)
+    precip_data_dir = cfg.precip_data_directory
+    file_suffix = cfg.file_suffix
+    detection_output_path = cfg.detection_output_path
+    raw_tracking_output_dir = cfg.raw_tracking_output_dir
+    tracking_output_dir = cfg.filtered_tracking_output_dir
+    precip_data_var = cfg.precip_var_name
+    lat_name = cfg.lat_name
+    lon_name = cfg.lon_name
+    data_source = cfg.data_source
 
     # Read optional date filtering parameters ---
-    years_to_process = config.get("years", [])
-    months_to_process = config.get("months", [])
-
-    # Detection parameters
-    min_size_threshold = config.get("min_size_threshold", 10)
-    heavy_precip_threshold = config.get("heavy_precip_threshold", 7)
-    lifted_index_threshold = config.get("lifted_index_threshold", -2)
-    moderate_precip_threshold = config.get("moderate_precip_threshold", 1)
-    min_nr_plumes = config.get("min_nr_plumes", 1)
-    lifted_index_percentage = config.get("lifted_index_percentage_threshold", 0.2)
-
-    # Tracking parameters
-    main_lifetime_thresh = config.get("main_lifetime_thresh", 4)
-    main_area_thresh = config.get("main_area_thresh", 3000)
-    nmaxmerge = config.get("nmaxmerge", 5)
-
-    # Operational parameters
-    USE_MULTIPROCESSING = config.get("use_multiprocessing", False)
-    NUMBER_OF_CORES = config.get("number_of_cores", 1)
-    RUN_DETECTION = config.get("detection", True)
-    USE_LIFTED_INDEX = config.get("use_lifted_index", True)
-    RUN_TRACKING = config.get("tracking", True)
-    RUN_POSTPROCESSING = config.get("postprocessing", True)
+    years_to_process = cfg.years
+    months_to_process = cfg.months
 
     # Create output directories
     os.makedirs(detection_output_path, exist_ok=True)
     os.makedirs(raw_tracking_output_dir, exist_ok=True)
 
     # Track the file mode for each phase.
-    # 'w' = overwrite (start fresh), 'a' = append (add to existing)
     log_modes = {
         "detection": "w",
         "tracking": "w",
@@ -143,13 +126,13 @@ def main():
     }
 
     # Initialize logging based on the starting phase
-    if RUN_DETECTION:
+    if cfg.detection:
         setup_logging(detection_output_path, filename="detection.log", mode=log_modes["detection"])
         log_modes["detection"] = "a" 
-    elif RUN_TRACKING:
+    elif cfg.tracking:
         setup_logging(raw_tracking_output_dir, filename="tracking.log", mode=log_modes["tracking"])
         log_modes["tracking"] = "a"
-    elif RUN_POSTPROCESSING:
+    elif cfg.postprocessing:
         os.makedirs(tracking_output_dir, exist_ok=True)
         setup_logging(tracking_output_dir, filename="postprocessing.log", mode=log_modes["postprocessing"])
         log_modes["postprocessing"] = "a"
@@ -158,7 +141,7 @@ def main():
     files_by_year = {}
     li_files_by_year = {}
 
-    if RUN_DETECTION:
+    if cfg.detection:
         # Find all files recursively
         all_precip_files = sorted(
             glob.glob(
@@ -182,9 +165,9 @@ def main():
         # Now, group the filtered list by year
         files_by_year = group_files_by_year(filtered_precip_files)
 
-        if USE_LIFTED_INDEX:
-            lifted_index_data_dir = config["lifted_index_data_directory"]
-            lifted_index_data_var = config["liting_index_var_name"]
+        if cfg.detection_filters.use_lifted_index:
+            lifted_index_data_dir = cfg.lifted_index_data_directory
+            lifted_index_data_var = cfg.lifted_index_var_name
 
             all_li_files = sorted(
                 glob.glob(
@@ -207,9 +190,11 @@ def main():
             )
 
             li_files_by_year = group_files_by_year(filtered_li_files)
-            
+        else:
+            lifted_index_data_var = False
+
     # Determine the years to iterate over
-    if RUN_DETECTION:
+    if cfg.detection:
         years_to_iterate = sorted(files_by_year.keys())
     else:
         # If detection is skipped, determine years from config or existing output directories
@@ -244,13 +229,13 @@ def main():
         # Retrieve files for the current year (empty if detection is skipped)
         precip_file_list_year = files_by_year.get(year, [])
 
-        if USE_LIFTED_INDEX:
+        if cfg.detection_filters.use_lifted_index:
             li_files_year = li_files_by_year.get(year, [])
         else:
-            li_files_year = [] # Empty list is fine here, handled in Else block below
+            li_files_year = [] 
             
         # --- 3a. DETECTION PHASE ---
-        if RUN_DETECTION:
+        if cfg.detection:
             # Configure logging for detection
             setup_logging(detection_output_path, filename="detection.log", mode=log_modes["detection"])
             log_modes["detection"] = "a" 
@@ -259,7 +244,7 @@ def main():
             matched_li_files = []
 
             # Perform Alignment
-            if USE_LIFTED_INDEX:
+            if cfg.detection_filters.use_lifted_index:
                 logger.info("Aligning Precipitation and Lifted Index files...")
                 file_pairs, miss_li, miss_precip = align_files_by_hour(precip_file_list_year, li_files_year)
                 
@@ -283,9 +268,9 @@ def main():
             
             logger.info(f"Running detection for {len(precip_file_list_year)} files in {year}...")
 
-            if USE_MULTIPROCESSING:
+            if cfg.use_multiprocessing:
                 with concurrent.futures.ProcessPoolExecutor(
-                    max_workers=NUMBER_OF_CORES
+                    max_workers=cfg.number_of_cores
                 ) as executor:
                     futures = [
                         executor.submit(
@@ -296,12 +281,13 @@ def main():
                             lifted_index_data_var,
                             lat_name,
                             lon_name,
-                            heavy_precip_threshold,
-                            lifted_index_threshold,
-                            moderate_precip_threshold,
-                            min_size_threshold,
-                            min_nr_plumes,
-                            lifted_index_percentage
+                            # Pass strict values from nested config
+                            cfg.detection_filters.heavy_precip_threshold,
+                            cfg.detection_filters.lifted_index_threshold,
+                            cfg.detection_filters.moderate_precip_threshold,
+                            cfg.detection_filters.min_size_threshold,
+                            cfg.detection_filters.min_nr_plumes,
+                            cfg.detection_filters.lifted_index_percentage_threshold
                         )
                         for precip_file, li_file in zip(
                             matched_precip_files, matched_li_files
@@ -324,12 +310,13 @@ def main():
                         lifted_index_data_var,
                         lat_name,
                         lon_name,
-                        heavy_precip_threshold,
-                        lifted_index_threshold,
-                        moderate_precip_threshold,
-                        min_size_threshold,
-                        min_nr_plumes,
-                        lifted_index_percentage
+                        # Pass strict values from nested config
+                        cfg.detection_filters.heavy_precip_threshold,
+                        cfg.detection_filters.lifted_index_threshold,
+                        cfg.detection_filters.moderate_precip_threshold,
+                        cfg.detection_filters.min_size_threshold,
+                        cfg.detection_filters.min_nr_plumes,
+                        cfg.detection_filters.lifted_index_percentage_threshold
                     )
                     save_detection_result(
                         detection_result, detection_output_path, data_source
@@ -338,7 +325,7 @@ def main():
             print(f"Detection for year {year} finished.")
 
         # --- 3b. & 3c. TRACKING PHASE ---
-        if RUN_TRACKING:
+        if cfg.tracking:
             # Configure logging for tracking
             setup_logging(raw_tracking_output_dir, filename="tracking.log", mode=log_modes["tracking"])
             log_modes["tracking"] = "a"
@@ -347,7 +334,7 @@ def main():
 
             year_detection_dir = os.path.join(detection_output_path, str(year))
             detection_results, grid_coords = load_individual_detection_files(
-                year_detection_dir, USE_LIFTED_INDEX
+                year_detection_dir, cfg.detection_filters.use_lifted_index
             )
 
             # Apply month filter if specified
@@ -386,10 +373,11 @@ def main():
             ) = track_mcs(
                 detection_results,
                 grid_coords,
-                main_lifetime_thresh,
-                main_area_thresh,
-                nmaxmerge,
-                use_li_filter=USE_LIFTED_INDEX,
+                # Pass strict values from nested config
+                cfg.tracking_filters.main_lifetime_thresh,
+                cfg.tracking_filters.main_area_thresh,
+                cfg.tracking_filters.nmaxmerge,
+                use_li_filter=cfg.detection_filters.use_lifted_index,
             )
             logger.info(f"Tracking for year {year} finished.")
             print(f"Tracking for year {year} finished.")
@@ -410,39 +398,53 @@ def main():
                     "lon": lon,
                     "tracking_centers": tracking_centers_list[i],
                 }
+                # Pass full config object if save_tracking_result needs it, or just necessary parts
+                # Assuming save_tracking_result expects 'config' (dict-like or object)
                 save_tracking_result(
-                    tracking_data_for_timestep, raw_tracking_output_dir, data_source, config
+                    tracking_data_for_timestep, raw_tracking_output_dir, data_source, cfg
                 )
             
             del detection_results
             del mcs_id
             del robust_mcs_id
             del lifetime_list
-            gc.collect() # Force garbage collection
+            gc.collect() 
             logger.info(f"--- Finished tracking for year: {year} ---")
             print(f"--- Finished tracking for year: {year} ---")
 
 
         # --- 3e. POST-PROCESSING PHASE ---
-        if RUN_POSTPROCESSING:
-            # Configure logging for post-processing
-            os.makedirs(tracking_output_dir, exist_ok=True)
-            setup_logging(tracking_output_dir, filename="postprocessing.log", mode=log_modes["postprocessing"])
-            log_modes["postprocessing"] = "a"
-            
-            logger.info("Logging initialized for POST-PROCESSING phase.")
-            try:
-                run_postprocessing_year(
-                    year,
-                    raw_tracking_output_dir,
-                    tracking_output_dir,
-                    config,
-                    NUMBER_OF_CORES
-                )
-            except Exception as e:
-                logger.error(f"Post-processing failed for year {year}: {e}")
+        if not cfg.detection_filters.use_lifted_index:
+            print("Skipping postprocessing because of no lifted index...")
+        else:
+            lifted_index_data_var = cfg.lifted_index_var_name
 
-        logger.info(f"--- Finished processing for year: {year} ---")
+            if cfg.postprocessing:
+
+                # Configure logging for post-processing
+                os.makedirs(tracking_output_dir, exist_ok=True)
+                setup_logging(tracking_output_dir, filename="postprocessing.log", mode=log_modes["postprocessing"])
+                log_modes["postprocessing"] = "a"
+                
+                logger.info("Logging initialized for POST-PROCESSING phase.")
+                try:
+                    run_postprocessing_year(
+                        year,
+                        raw_tracking_output_dir,
+                        tracking_output_dir,
+                        precip_data_var,
+                        lifted_index_data_var,
+                        lat_name,
+                        lon_name,
+                        cfg, # Pass the full config object
+                        cfg.use_multiprocessing,
+                        cfg.number_of_cores
+                    )
+                except Exception as e:
+                    logger.error(f"Post-processing failed for year {year}: {e}")
+
+            logger.info(f"--- Finished processing for year: {year} ---")
+            print(f"--- Finished processing for year: {year} ---")
 
     logger.info("All processing completed successfully.")
     print("All processing completed successfully.")

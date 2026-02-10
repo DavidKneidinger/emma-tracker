@@ -1,18 +1,18 @@
 # config.yaml
 
 # Data
-precip_data_directory: "/reloclim/dkn/data/IMERG"
-lifting_index_data_directory: "/reloclim/dkn/data/ERA5/lifting_index"
+precip_data_directory: "/input/precip/"
+lifted_index_data_directory: "/input/lifted_index/"
 file_suffix: ".nc"
-detection_output_path: "/reloclim/dkn/data/EMMA/detection/"
-raw_tracking_output_dir: "/reloclim/dkn/data/'EMMA/tracking_raw/"
-filtered_tracking_output_dir: "/reloclim/dkn/data/'EMMA/tracking/"
+detection_output_path: "/output/detection/"
+raw_tracking_output_dir: "/output/tracking_raw"
+filtered_tracking_output_dir: "/output/tracking/"
 
 precip_var_name: "precipitation"
-liting_index_var_name: "LI"
-lat_name: "lat"
-lon_name: "lon"
-data_source: "IMERG precipitation and ERA5 Lifted Index"
+lifted_index_var_name: "LI"
+lat_name: "rlat"
+lon_name: "rlon"
+data_source: "Description of your source data"
 
 # Years and Months to process
 # empty list uses all available data in the specified directory
@@ -20,29 +20,31 @@ years: []
 months: [5, 6, 7, 8, 9]
 
 # Detection parameter
-detection: True
-use_lifted_index: True
-min_size_threshold: 10  # min number of grid cells for an object to be detected
-heavy_precip_threshold: 6.82  # mm/h
-moderate_precip_threshold: 1.0
-min_nr_plumes: 1  # number of heavy precipitation plums
-lifted_index_percentage_threshold: 0.2  # mm/h
+detection: False
+detection_filters:
+  use_lifted_index: True
+  min_size_threshold: 10  # min number of grid cells for an object to be detected
+  heavy_precip_threshold: 6.8  # mm/h
+  moderate_precip_threshold: 1.0
+  min_nr_plumes: 1  # number of heavy precipitation plums
+  lifted_index_percentage_threshold: 0.1
+  lifted_index_threshold: -2  # K
 
 # Tracking parameter
-tracking: True
-main_lifetime_thresh: 4  # min number of hours for an MCS in the mature state
-main_area_thresh: 5000  # min area for a system to be in the mature state
-grid_cell_area_km2: 121  # area in km2
-nmaxmerge: 5  # maximum number of objects to merge in a single timestep
+tracking: False
+tracking_filters:
+  main_lifetime_thresh: 4  # min number of hours for an MCS in the mature state
+  main_area_thresh: 3500  # min area for a system to be in the mature state
+  nmaxmerge: 5  # maximum number of objects to merge in a single timestep
 
 # Post-processing / Filtering
 # This section controls the physics-based filtering logic
 postprocessing: True
 postprocessing_filters:
-  lifted_index_threshold: 0.0          # Keep systems with mean LI < 0.0 K
+  lifted_index_threshold: 1.5          # Keep systems with mean LI < 0.0 K
   track_straightness_threshold: 0.4    # Keep systems with straightness > 0.4
-  max_area_volatility: 120000.0        # Keep systems with max volatility < 1.2e5
+  max_area_volatility: 90000.0        # Keep systems with max volatility < 0.9e5
 
 # Other parameter
 use_multiprocessing: True
-number_of_cores: 30
+number_of_cores: 20
