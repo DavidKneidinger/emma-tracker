@@ -132,10 +132,10 @@ def process_single_timestep(
         li_file = next((f for f in li_files if time_key in os.path.basename(f)), None)
 
         current_li = None  # Initialize as None
-        if li_file:  # Only load if file exists
+        if li_file:
             current_li = load_lifted_index_data(
                 li_file, lifted_index_var_name, lat_name, lon_name
-            )[-1]
+            )[-1].squeeze()
 
         # Load Precipitation
         precip_file = next(
@@ -146,7 +146,7 @@ def process_single_timestep(
         if precip_file:
             current_precip = load_precipitation_data(
                 precip_file, precip_var_name, lat_name, lon_name
-            )[-1]
+            )[-1].squeeze()
 
         # Skip detailed physics if environmental data is missing
         if current_li is None or current_precip is None:
@@ -170,12 +170,22 @@ def process_single_timestep(
             track_area = np.sum(area_map_km2[mask])
 
             # Physical Properties
-            mean_li = np.nanmean(current_li.values[mask])
-            p_vals = current_precip.values[mask]
+            mean_li = np.nan
+            if current_li is not None and current_li.shape == mask.shape:
+                mean_li = np.nanmean(current_li.values[mask])
+
+            p_vals = np.array([])
+            if current_precip is not None and current_precip.shape == mask.shape:
+                p_vals = current_precip.values[mask]
+
+            mean_precip = np.nanmean(p_vals) if len(p_vals) > 0 else np.nan
+            max_precip = np.nanmax(p_vals) if len(p_vals) > 0 else np.nan
+
             mean_precip = np.nanmean(p_vals)
             max_precip = np.nanmax(p_vals)
 
             precip_skew = np.nan
+
             if len(p_vals) > 5:
                 precip_skew = skew(p_vals, nan_policy="omit")
 
@@ -189,7 +199,7 @@ def process_single_timestep(
 
             results.append(
                 {
-                    "track_number": int(track_id),
+                    "track_number": f"{track_id}-{pd.to_datetime(time_val).year}",
                     "datetime": time_str,
                     "center_lat": center_lat,
                     "center_lon": center_lon,
@@ -436,6 +446,10 @@ def run_postprocessing_year(
 
     df_summary = df_summary.merge(kinematics, on="track_number")
     df_summary = df_summary.merge(volatility, on="track_number")
+
+    # Add track-number as column and put it first
+    df_summary = df_summary.reset_index()
+    df_summary.insert(0, 'track_number', df_summary.pop('track_number'))
 
     # Update GLOBAL Summary CSV
     csv_summary_path = os.path.join(tracking_output_dir, "mcs_track_summary.csv")
