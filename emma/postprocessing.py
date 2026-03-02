@@ -126,7 +126,7 @@ def process_single_timestep(
 
         # --- 2. Environmental Data Loading ---
         t_pd = pd.to_datetime(time_val)
-        time_key = t_pd.strftime("%Y%m")  # Match monthly file pattern
+        time_key = t_pd.strftime("%Y%m%dT%H")
 
         # Load Lifted Index (using shared helper)
         li_file = next((f for f in li_files if time_key in os.path.basename(f)), None)
