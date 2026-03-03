@@ -27,6 +27,7 @@ def detect_mcs_in_file(
     min_size_threshold,
     min_nr_plumes,
     lifted_index_percentage,
+    grid_info,
     time_index=0,
 ):
     """
@@ -43,6 +44,7 @@ def detect_mcs_in_file(
     - min_size_threshold: Minimum size threshold for clusters (number of grid cells).
     - min_nr_plumes: Minimum number of convective plumes required for MCS candidate.
     - lifted_index_percentage: Percentage of Area that needs to fullfil the lifted_index criteria.
+    - grid_info: Dictionary containing the globally verified spatial dimensions and area map.
     - time_index: Index of the time step to process.
 
     Returns:
@@ -50,15 +52,22 @@ def detect_mcs_in_file(
     """
     logger = logging.getLogger(__name__)
     lifted_index_regions = None
-    
+
     # Load data
-    ds, lat2d, lon2d, lat, lon, precipitation = load_precipitation_data(
+    ds, _, _, _, _, precipitation = load_precipitation_data(
         precip_file_path, precip_data_var, lat_name, lon_name, time_index
     )
 
+    lat2d = grid_info["lat2d"]
+    lon2d = grid_info["lon2d"]
+    lat = grid_info["lat1d"]
+    lon = grid_info["lon1d"]
+
     # Initialize lifted_index_regions as an array of zeros
     # This ensures it always has the correct shape and type for your output format.
-    lifted_index_regions = np.ones_like(precipitation, dtype=np.int32) * lifted_index_threshold
+    lifted_index_regions = (
+        np.ones_like(precipitation, dtype=np.int32) * lifted_index_threshold
+    )
 
     # Step 1: Smooth the precipitation field
     precipitation_smooth = smooth_precipitation_field(precipitation)
@@ -87,10 +96,7 @@ def detect_mcs_in_file(
 
     # Step 4: Filter MCS candidates based on number of convective plumes, size and lifted index
     mcs_candidate_labels = filter_mcs_candidates(
-        expanded_labels,
-        core_labels,
-        min_size_threshold,
-        min_nr_plumes
+        expanded_labels, core_labels, min_size_threshold, min_nr_plumes
     )
 
     # Create final labeled regions for MCS candidates
@@ -98,15 +104,23 @@ def detect_mcs_in_file(
         np.isin(expanded_labels, mcs_candidate_labels), expanded_labels, 0
     )
 
-    if lifted_index_file_path and lifted_index_file_path.strip(): # Check if path is not None and not just empty spaces
+    if (
+        lifted_index_file_path and lifted_index_file_path.strip()
+    ):  # Check if path is not None and not just empty spaces
         logger.info("Lifting index file provided. Applying filter...")
         # Load the lifted index data
-        ds_li, _, _, _, _, lifted_index = load_lifted_index_data(
-            lifted_index_file_path, lifted_index_data_var, lat_name, lon_name, time_index
+        _, _, _, _, _, lifted_index_converted = load_lifted_index_data(
+            lifted_index_file_path,
+            lifted_index_data_var,
+            lat_name,
+            lon_name,
+            time_index,
         )
         # Apply the filter
         lifted_index_regions = lifted_index_filter(
-            ds_li[lifted_index_data_var].values,
+            lifted_index_converted.values
+            if hasattr(lifted_index_converted, "values")
+            else lifted_index_converted,
             final_labeled_regions,
             lifted_index_percentage,
             lifted_index_threshold=lifted_index_threshold,
