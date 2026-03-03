@@ -9,14 +9,18 @@ import re
 import sys
 import logging
 from collections import defaultdict
+from emma.grid_manager import build_grid_info
+
+logger = logging.getLogger(__name__)
+
 
 def align_files_by_hour(precip_files, li_files):
     """
     Pairs Precipitation and Lifted Index files based on internal time coordinates.
     Ignores minutes so that T12:30 matches T12:00.
-    
+
     If internal time reading fails, falls back to assumption based on file counts.
-    
+
     Returns:
         valid_pairs (list): List of tuples (precip_path, li_path)
         missing_li (list): List of timestamp keys missing LI
@@ -31,7 +35,7 @@ def align_files_by_hour(precip_files, li_files):
         """
         try:
             # decode_times=True is default, but explicit is safer
-            with xr.open_dataset(filepath, engine='netcdf4') as ds:
+            with xr.open_dataset(filepath, engine="netcdf4") as ds:
                 if "time" in ds and ds["time"].size > 0:
                     t = ds["time"].values[0]
                     # Convert to YYYYMMDDHH string
@@ -53,7 +57,7 @@ def align_files_by_hour(precip_files, li_files):
             precip_map[t_key] = f
         else:
             failed_read = True
-            break # Stop reading if one fails, try fallback
+            break  # Stop reading if one fails, try fallback
 
     # 2. Read Lifted Index Files (only if precip succeeded)
     if not failed_read:
@@ -83,12 +87,14 @@ def align_files_by_hour(precip_files, li_files):
                 missing_li.append(key)
             elif l_file and not p_file:
                 missing_precip.append(key)
-        
+
         return valid_pairs, missing_li, missing_precip
 
     # --- Strategy 2: Fallback (Count Match) ---
-    logger.info("Internal time extraction failed (missing 'time' var or corrupt file). Attempting fallback...")
-    
+    logger.info(
+        "Internal time extraction failed (missing 'time' var or corrupt file). Attempting fallback..."
+    )
+
     if len(precip_files) == len(li_files):
         msg = (
             f"Fallback Triggered: Both directories have {len(precip_files)} files. "
@@ -100,10 +106,10 @@ def align_files_by_hour(precip_files, li_files):
         # Sort strictly by filename to ensure alignment
         p_sorted = sorted(precip_files)
         l_sorted = sorted(li_files)
-        
+
         # Zip them together
         valid_pairs = list(zip(p_sorted, l_sorted))
-        
+
         # In fallback mode, we assume no missing files
         return valid_pairs, [], []
 
@@ -113,7 +119,8 @@ def align_files_by_hour(precip_files, li_files):
             f"(Precip: {len(precip_files)}, LI: {len(li_files)}). Cannot pair files."
         )
         return [], [], []
-    
+
+
 def get_dataset_encoding(ds):
     """
     Centralized encoding logic for all EMMA output files.
@@ -207,28 +214,6 @@ def save_dataset_to_netcdf(ds, output_path):
     """
     encoding = get_dataset_encoding(ds)
     ds.to_netcdf(output_path, encoding=encoding)
-
-
-def _is_regular_grid(lat_1d, lon_1d, lat_2d):
-    """
-    Check if the grid is a regular lat/lon grid (IMERG/ERA5)
-    or a rotated/curvilinear grid (CORDEX).
-
-    Logic: If meshgrid(lon_1d, lat_1d) approximately equals lat_2d, it's regular.
-    """
-    try:
-        # Quick check on shapes
-        if lat_2d.shape != (len(lat_1d), len(lon_1d)):
-            return False
-
-        # Check values (using a slice to avoid memory overhead on large grids)
-        # Check the first column of lat_2d against the 1D lat vector
-        if not np.allclose(lat_2d[:, 0], lat_1d, atol=1e-4):
-            return False
-
-        return True
-    except:
-        return False
 
 
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -415,13 +400,13 @@ def convert_lifted_index_units(li, target_unit="K"):
     return new_li
 
 
-def load_precipitation_data(file_path, data_var, lat_name, lon_name, time_index=0):
+def load_precipitation_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0):
     """
     Load the dataset and select the specified time step, scaling the precipitation
     variable to units of mm/h for consistency with the detection threshold.
 
     This function implements STRICT grid validation:
-    1. It loads the native grid coordinates (1D or 2D) based on lat_name/lon_name.
+    1. It loads the native grid coordinates (1D or 2D) based on y_dim_name/x_dim_name.
     2. It explicitly searches for 2D auxiliary geographic coordinates (lat/lon) if the
        native grid is 1D (e.g. CORDEX rotated grids).
     3. It raises a ValueError if rotated dimensions are detected but no 2D geographic
@@ -430,8 +415,8 @@ def load_precipitation_data(file_path, data_var, lat_name, lon_name, time_index=
     Parameters:
     - file_path: Path to the NetCDF file.
     - data_var: Name of the precipitation variable.
-    - lat_name: Name of the latitude variable (native dimension).
-    - lon_name: Name of the longitude variable (native dimension).
+    - y_dim_name: Name of the latitude variable (native dimension).
+    - x_dim_name: Name of the longitude variable (native dimension).
     - time_index: Index of the time step to select.
 
     Returns:
@@ -442,69 +427,54 @@ def load_precipitation_data(file_path, data_var, lat_name, lon_name, time_index=
     - lon: 1D array of native longitudes (or x-indices).
     - prec: 2D DataArray of precipitation values (scaled to mm/h).
     """
-    ds = xr.open_dataset(file_path, engine='netcdf4')
-    ds = ds.isel(time=time_index)  # Select the specified time step
+    ds = xr.open_dataset(file_path, engine="netcdf4")
+    ds = ds.isel(time=time_index)
     ds["time"] = ds["time"].values.astype("datetime64[ns]")
 
-    # 1. Load Native Coordinates (the dimensions of the data variable)
-    native_lat = ds[lat_name].values
-    native_lon = ds[lon_name].values
+    # 1. Load Native 1D Dimensions
+    native_y = ds[y_dim_name].values
+    native_x = ds[x_dim_name].values
 
-    # Initialize 2D coords as None
     lat2d, lon2d = None, None
 
-    # 2. Determine 2D Geographic Coordinates (lat2d, lon2d)
-    if native_lat.ndim == 1 and native_lon.ndim == 1:
-        # Check specific standard names for 2D auxiliary coordinates.
-        # We do NOT blindly accept any 2D variable to avoid ambiguity.
+    # 2. Determine 2D Geographic Coordinates
+    if native_y.ndim == 1 and native_x.ndim == 1:
         aux_candidates = [("lat", "lon"), ("latitude", "longitude")]
 
-        for aux_lat_name, aux_lon_name in aux_candidates:
-            if aux_lat_name in ds and aux_lon_name in ds:
-                # STRICT CHECK: Dimensions must match the native grid shape (y, x)
-                expected_shape = (len(native_lat), len(native_lon))
+        for aux_lat, aux_lon in aux_candidates:
+            if aux_lat in ds and aux_lon in ds:
+                expected_shape = (len(native_y), len(native_x))
+                if ds[aux_lat].ndim == 2 and ds[aux_lat].shape == expected_shape:
+                    lat2d = ds[aux_lat].values
+                    lon2d = ds[aux_lon].values
+                    break
 
-                if (ds[aux_lat_name].ndim == 2 and
-                    ds[aux_lat_name].shape == expected_shape):
-
-                    lat2d = ds[aux_lat_name].values
-                    lon2d = ds[aux_lon_name].values
-                    break  # Stop once valid coords are found
-
-        # 3. Strict Decision Logic (No Fallbacks)
+        # 3. Strict Decision Logic
         if lat2d is None:
-            # Check if user inputs imply a rotated grid (e.g., 'rlat', 'rlon')
-            is_rotated_dim = "rlat" in lat_name or "rlon" in lon_name
-
+            is_rotated_dim = "rlat" in y_dim_name or "rlon" in x_dim_name
             if is_rotated_dim:
                 raise ValueError(
-                    f"STRICT MODE ERROR: Native dimensions are '{lat_name}'/'{lon_name}', "
+                    f"STRICT MODE ERROR: Native dimensions are '{y_dim_name}'/'{x_dim_name}', "
                     "implying a rotated grid. However, no valid 2D geographic coordinates "
-                    "(lat/lon or latitude/longitude) were found in the file. "
-                    "Aborting to prevent georeferencing errors."
+                    "were found. Aborting to prevent georeferencing errors."
                 )
-
-            # Only if we are sure it's NOT rotated do we create the meshgrid.
-            lon2d, lat2d = np.meshgrid(native_lon, native_lat)
-
-        # The 1D axes are the native ones (used for indexing/tracking)
-        lat = native_lat
-        lon = native_lon
+            # Create meshgrid for regular grids
+            lon2d, lat2d = np.meshgrid(native_x, native_y)
 
     else:
-        raise ValueError("Please provide the name of the 1D coordinate to avoid forcing a rotated grid on the regular lat lon grid")
+        raise ValueError("Please provide the name of the 1D dimension coordinates.")
 
     prec = ds[str(data_var)]
     prec_converted = convert_precip_units(prec)
-    
-    return ds, lat2d, lon2d, lat, lon, prec_converted
+
+    return ds, lat2d, lon2d, native_y, native_x, prec_converted
 
 
-def load_lifted_index_data(file_path, data_var, lat_name, lon_name, time_index=0):
+def load_lifted_index_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0):
     """
     Load the dataset and select the specified time step, scaling the lifted_index data
     variable to units of K for consistency with the detection threshold.
-    
+
     This function implements STRICT grid validation identical to load_precipitation_data:
     1. Loads native coordinates.
     2. Searches for 2D auxiliary coordinates if native coords are 1D.
@@ -513,8 +483,8 @@ def load_lifted_index_data(file_path, data_var, lat_name, lon_name, time_index=0
     Parameters:
     - file_path: Path to the NetCDF file.
     - data_var: Name of the precipitation variable.
-    - lat_name: Name of the latitude variable.
-    - lon_name: Name of the longitude variable.
+    - y_dim_name: Name of the latitude variable.
+    - x_dim_name: Name of the longitude variable.
     - time_index: Index of the time step to select.
 
     Returns:
@@ -525,62 +495,48 @@ def load_lifted_index_data(file_path, data_var, lat_name, lon_name, time_index=0
     - lon: 1D array of native longitudes
     - li_converted: 2D DataArray of lifted index values (scaled to K).
     """
-    ds = xr.open_dataset(file_path, engine='netcdf4')
-    ds = ds.isel(time=time_index)  # Select the specified time step
+    ds = xr.open_dataset(file_path, engine="netcdf4")
+    ds = ds.isel(time=time_index)
     ds["time"] = ds["time"].values.astype("datetime64[ns]")
 
-    # 1. Load Native Coordinates
-    native_lat = ds[lat_name].values
-    native_lon = ds[lon_name].values
+    native_y = ds[y_dim_name].values
+    native_x = ds[x_dim_name].values
 
-    # Initialize 2D coords
     lat2d, lon2d = None, None
 
-    # 2. Determine 2D Geographic Coordinates
-    if native_lat.ndim == 1 and native_lon.ndim == 1:
+    if native_y.ndim == 1 and native_x.ndim == 1:
         aux_candidates = [("lat", "lon"), ("latitude", "longitude")]
 
-        for aux_lat_name, aux_lon_name in aux_candidates:
-            if aux_lat_name in ds and aux_lon_name in ds:
-                expected_shape = (len(native_lat), len(native_lon))
-                if (ds[aux_lat_name].ndim == 2 and
-                    ds[aux_lat_name].shape == expected_shape):
-                    
-                    lat2d = ds[aux_lat_name].values
-                    lon2d = ds[aux_lon_name].values
+        for aux_lat, aux_lon in aux_candidates:
+            if aux_lat in ds and aux_lon in ds:
+                expected_shape = (len(native_y), len(native_x))
+                if ds[aux_lat].ndim == 2 and ds[aux_lat].shape == expected_shape:
+                    lat2d = ds[aux_lat].values
+                    lon2d = ds[aux_lon].values
                     break
 
-        # 3. Strict Decision Logic
         if lat2d is None:
-            is_rotated_dim = "rlat" in lat_name or "rlon" in lon_name
+            is_rotated_dim = "rlat" in y_dim_name or "rlon" in x_dim_name
             if is_rotated_dim:
                 raise ValueError(
-                    f"STRICT MODE ERROR: Native dimensions are '{lat_name}'/'{lon_name}', "
-                    "implying a rotated grid. However, no valid 2D geographic coordinates "
-                    "(lat/lon or latitude/longitude) were found in the file. "
-                    "Aborting to prevent georeferencing errors."
+                    f"STRICT MODE ERROR: Native dimensions are '{y_dim_name}'/'{x_dim_name}', "
+                    "implying a rotated grid but 2D coordinates are missing."
                 )
-            
-            # Assume regular grid
-            lon2d, lat2d = np.meshgrid(native_lon, native_lat)
-
-        lat = native_lat
-        lon = native_lon
+            lon2d, lat2d = np.meshgrid(native_x, native_y)
 
     else:
-        raise ValueError("Please provide the name of the 1D coordinate to avoid forcing a rotated grid on the regular lat lon grid")
+        raise ValueError("Please provide the name of the 1D dimension coordinates.")
 
     li = ds[str(data_var)]
-    # Convert the lifted index data to K using the separate conversion function.
     li_converted = convert_lifted_index_units(li, target_unit="K")
 
-    # Remove all non relevant data variables from dataset
+    # Drop unused vars to save memory
     data_vars_list = [v for v in ds.data_vars]
     if data_var in data_vars_list:
         data_vars_list.remove(data_var)
-    ds = ds.drop_vars(data_vars_list, errors='ignore')
+    ds = ds.drop_vars(data_vars_list, errors="ignore")
 
-    return ds, lat2d, lon2d, lat, lon, li_converted
+    return ds, lat2d, lon2d, native_y, native_x, li_converted
 
 
 def serialize_center_points(center_points):
@@ -592,65 +548,52 @@ def serialize_center_points(center_points):
     return json.dumps(casted_dict)
 
 
-# emma/input_output.py
-
-# ... existing imports ...
-
-
-def load_individual_detection_files(year_input_dir, use_li_filter):
+def load_individual_detection_files(
+    year_input_dir, use_li_filter, y_dim_name, x_dim_name
+):
     """
     Load a sequence of detection result NetCDF files.
-    Optimized: Loads coordinates only once to save memory.
+    Optimized: Loads coordinates and builds the global grid_info template
+    only once to save memory.
+
+    Args:
+        year_input_dir (str): Directory containing the detection files for a specific year.
+        use_li_filter (bool): Flag indicating whether to load Lifted Index regions.
+        y_dim_name (str): Name of the 1D y-dimension (from config).
+        x_dim_name (str): Name of the 1D x-dimension (from config).
 
     Returns:
-        tuple: (detection_results_list, shared_grid_coords)
+        tuple: (detection_results_list, grid_info)
     """
     detection_results = []
-    shared_coords = None
+    grid_info = None
 
     file_pattern = os.path.join(year_input_dir, "**", "detection_*.nc")
     filepaths = sorted(glob.glob(file_pattern, recursive=True))
 
     if not filepaths:
-        print(f"Warning: No detection files found matching {file_pattern}")
+        logger.warning(f"No detection files found matching {file_pattern}")
         return [], None
 
     for filepath in filepaths:
         try:
-            with xr.open_dataset(filepath, engine='netcdf4') as ds:
+            with xr.open_dataset(filepath, engine="netcdf4") as ds:
                 time_val = ds["time"].values[0]
 
-                if shared_coords is None:
-                    # Robust Dimension Detection
-                    if "rlat" in ds.dims:
-                        lat_dim, lon_dim = "rlat", "rlon"
-                    elif "lat" in ds.dims:
-                        lat_dim, lon_dim = "lat", "lon"
-                    elif "y" in ds.dims:
-                        lat_dim, lon_dim = "y", "x"
-                    else:
-                        lat_dim, lon_dim = ds.dims[1], ds.dims[2]
+                # Initialize the grid_info template on the very first file
+                if grid_info is None:
+                    # 1. Load dimensions using exact config names (No more guessing)
+                    lat_1d = ds[y_dim_name].values
+                    lon_1d = ds[x_dim_name].values
 
-                    lat = ds[lat_dim].values
-                    lon = ds[lon_dim].values
+                    # 2. Extract 2D Geographic Coordinates (Always present in our new detection files)
+                    lat2d = ds["latitude"].values
+                    lon2d = ds["longitude"].values
 
-                    # Coordinate Reconstruction
-                    if "latitude" in ds.variables:
-                        lat2d = ds["latitude"].values
-                        lon2d = ds["longitude"].values
-                    elif "lat" in ds.variables and ds["lat"].ndim == 2:
-                        lat2d = ds["lat"].values
-                        lon2d = ds["lon"].values
-                    else:
-                        # Recreate 2D mesh for internal processing if missing (Regular Grid)
-                        lon2d, lat2d = np.meshgrid(lon, lat)
-
-                    shared_coords = {
-                        "lat": lat,
-                        "lon": lon,
-                        "lat2d": lat2d,
-                        "lon2d": lon2d,
-                    }
+                    # 3. Build the comprehensive grid template (including area_map)
+                    grid_info = build_grid_info(
+                        ds, y_dim_name, x_dim_name, lat2d, lon2d
+                    )
 
                 final_labeled_regions = ds["final_labeled_regions"].values[0]
 
@@ -698,21 +641,34 @@ def load_individual_detection_files(year_input_dir, use_li_filter):
                 detection_results.append(detection_result)
 
         except Exception as e:
-            print(f"Error loading {filepath}: {e}")
+            logger.error(f"Error loading {filepath}: {e}")
             continue
 
     detection_results.sort(key=lambda x: x["time"])
-    return detection_results, shared_coords
+    return detection_results, grid_info
 
 
-def save_detection_result(detection_result, output_dir, data_source):
+def save_detection_result(detection_result, output_dir, data_source, grid_info):
     """
     Saves a single timestep's detection results to a compressed, CF-compliant NetCDF file.
 
-    Optimized for CORDEX/Climate Model grids:
-    - Uses 'lat'/'lon' for regular grids or 'rlat'/'rlon' for rotated grids.
-    - Stores center points as parallel variables.
-    - Applies zlib compression.
+    This function uses the grid_info template to dynamically apply 100% CF-compliant
+    projection metadata while preserving the 2D detection masks and scalar center points.
+
+    The output files are organized into a directory structure: `{output_dir}/YYYY/MM/`.
+
+    Args:
+        detection_result (dict): A dictionary containing all detection data for one frame:
+            - "time" (datetime-like): The timestamp for this frame.
+            - "final_labeled_regions" (np.ndarray): 2D array of detected convective objects.
+            - "lifted_index_regions" (np.ndarray): 2D array of the lifted index mask.
+            - "center_points" (dict): A mapping `{label_id: (lat, lon)}` for all detected objects.
+        output_dir (str): The root directory where output subfolders will be created.
+        data_source (str): A string describing the input source.
+        grid_info (dict): The verified spatial grid template.
+
+    Returns:
+        None
     """
     time_val = pd.to_datetime(detection_result["time"]).round("s")
     year_str = time_val.strftime("%Y")
@@ -724,20 +680,13 @@ def save_detection_result(detection_result, output_dir, data_source):
     filename = f"detection_{time_val.strftime('%Y%m%dT%H')}.nc"
     output_filepath = os.path.join(structured_dir, filename)
 
-    # 1. Determine Grid Type
-    lat_1d = detection_result["lat"]
-    lon_1d = detection_result["lon"]
-    lat_2d = detection_result["lat2d"]
-    lon_2d = detection_result["lon2d"]
+    # 1. Extract dimensions from grid_info (The new way)
+    y_dim = grid_info["y_dim_name"]
+    x_dim = grid_info["x_dim_name"]
+    y_1d = grid_info["lat1d"]
+    x_1d = grid_info["lon1d"]
 
-    is_regular = _is_regular_grid(lat_1d, lon_1d, lat_2d)
-
-    if is_regular:
-        y_dim, x_dim = "lat", "lon"
-    else:
-        y_dim, x_dim = "rlat", "rlon"
-
-    # 2. Process Center Points
+    # 2. Process Center Points (From your old function)
     center_points = detection_result.get("center_points", {})
     if center_points:
         sorted_labels = sorted(center_points.keys(), key=lambda x: int(x))
@@ -755,7 +704,7 @@ def save_detection_result(detection_result, output_dir, data_source):
         label_lats = []
         label_lons = []
 
-    # 3. Extract Grids
+    # 3. Extract Grids with time dimension
     final_labeled_regions = np.expand_dims(
         detection_result["final_labeled_regions"], axis=0
     )
@@ -763,7 +712,7 @@ def save_detection_result(detection_result, output_dir, data_source):
         detection_result["lifted_index_regions"], axis=0
     )
 
-    # 4. Create Dataset
+    # 4. Create Dataset structure
     data_vars = {
         "final_labeled_regions": (["time", y_dim, x_dim], final_labeled_regions),
         "lifted_index_regions": (["time", y_dim, x_dim], lifted_index_regions),
@@ -772,68 +721,51 @@ def save_detection_result(detection_result, output_dir, data_source):
         "label_lon": (["labels"], label_lons),
     }
 
-    # Add CORDEX specific variables only if NOT regular
-    if not is_regular:
-        data_vars["rotated_pole"] = ([], 0)
-
     ds = xr.Dataset(
         data_vars=data_vars,
         coords={
             "time": [time_val],
-            y_dim: lat_1d,
-            x_dim: lon_1d,
+            y_dim: y_1d,
+            x_dim: x_1d,
         },
     )
 
-    # Add 2D aux coordinates ONLY if rotated.
-    if not is_regular:
-        ds["latitude"] = ((y_dim, x_dim), lat_2d)
-        ds["longitude"] = ((y_dim, x_dim), lon_2d)
+    # Always add true 2D geographic coordinates from grid_info
+    ds["latitude"] = ((y_dim, x_dim), grid_info["lat2d"])
+    ds["longitude"] = ((y_dim, x_dim), grid_info["lon2d"])
 
-    # Metadata
+    # 5. Metadata and Passthrough
     ds.attrs = {
         "title": "EMMA-Tracker Detection Output",
         "institution": "Wegener Center for Climate and Global Change, University of Graz",
         "source": data_source,
         "history": f"Created on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "references": "Kneidinger et al. (2025)",
-        "Conventions": "CF-1.6",
+        "Conventions": "CF-1.7",
         "project": "EMMA",
     }
 
-    # Variable Attributes
-    # IMPORTANT: Do NOT include 'axis' attribute.
-    ds[y_dim].attrs = {
-        "standard_name": "latitude" if is_regular else "grid_latitude",
-        "units": "degrees_north" if is_regular else "degrees",
-    }
-    ds[x_dim].attrs = {
-        "standard_name": "longitude" if is_regular else "grid_longitude",
-        "units": "degrees_east" if is_regular else "degrees",
-    }
+    # Re-attach the exact 1D attributes from the input file
+    ds[y_dim].attrs = grid_info.get("y_attrs", {})
+    ds[x_dim].attrs = grid_info.get("x_attrs", {})
+
     ds["time"].attrs = {"standard_name": "time"}
+    ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
+    ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
 
-    if not is_regular:
-        # Rotated grids: Standard_name required for 2D vars
-        ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
-        ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
+    # --- INJECT CF-COMPLIANT PROJECTION ---
+    cf_meta = grid_info.get("cf_metadata", {})
+    mapping_name = cf_meta.get("grid_mapping_name", "spatial_projection")
 
-        ds["rotated_pole"].attrs = {
-            "grid_mapping_name": "rotated_latitude_longitude",
-            "grid_north_pole_latitude": 39.25,
-            "grid_north_pole_longitude": -162.0,
-        }
+    ds[mapping_name] = ([], 0)
+    ds[mapping_name].attrs = cf_meta
 
     for var in ["final_labeled_regions", "lifted_index_regions"]:
-        if not is_regular:
-            ds[var].attrs["grid_mapping"] = "rotated_pole"
-            ds[var].attrs["coordinates"] = "latitude longitude"
-        else:
-            # Regular: Remove 'coordinates' attribute. ncview infers from dimensions.
-            if "coordinates" in ds[var].attrs:
-                del ds[var].attrs["coordinates"]
+        ds[var].attrs["grid_mapping"] = mapping_name
+        ds[var].attrs["coordinates"] = "latitude longitude"
         ds[var].attrs["cell_methods"] = "time: point"
 
+    # Specific Variable Attributes
     ds["final_labeled_regions"].attrs.update(
         {"long_name": "Labeled Convective Regions", "units": "1"}
     )
@@ -847,12 +779,12 @@ def save_detection_result(detection_result, output_dir, data_source):
 
 
 def save_tracking_result(
-    tracking_data_for_timestep, output_dir, data_source, config=None
+    tracking_data_for_timestep, output_dir, data_source, grid_info, config=None
 ):
-    """
-    Saves a single timestep's tracking results to a compressed, CF-compliant NetCDF file.
+    """Saves a single timestep's tracking results to a compressed, CF-compliant NetCDF file.
 
-    This function is optimized for Climate Model (CORDEX) grids and GIS compatibility.
+    This function dynamically adapts to any grid projection (Regular, Rotated, Lambert, etc.)
+    using the provided `grid_info` template, ensuring full GIS compatibility.
     It saves both the 2D segmentation masks (gridded data) and the scalar summary
     statistics of active tracks (tabular data) in a single file.
 
@@ -864,21 +796,19 @@ def save_tracking_result(
             - "robust_mcs_id" (np.ndarray): 2D array of Track IDs for mature/robust MCS phases.
             - "mcs_id" (np.ndarray): 2D array of Track IDs for the full MCS lifecycle.
             - "mcs_id_merge_split" (np.ndarray): 2D array of Track IDs including merger history.
-            - "lat" (np.ndarray): 1D array of y-coordinates (indices or projection y).
-            - "lon" (np.ndarray): 1D array of x-coordinates (indices or projection x).
-            - "lat2d" (np.ndarray): 2D array of true latitudes (WGS84).
-            - "lon2d" (np.ndarray): 2D array of true longitudes (WGS84).
             - "tracking_centers" (dict): A mapping `{track_id: (lat, lon)}` for all active tracks.
         output_dir (str): The root directory where output subfolders will be created.
-        data_source (str): A string describing the input source (e.g., "IMERG + ERA5").
+        data_source (str): A string describing the input source (e.g., "IMERG + ERA5" or "CERRA").
+        grid_info (dict): The verified spatial grid template (generated via grid_manager.py), containing
+            1D dimensions, 2D coordinates, and CF-compliant projection metadata.
         config (dict, optional): The run configuration dictionary. If provided, it is
             serialized into the global attribute 'run_configuration' for provenance.
 
     Output NetCDF Structure:
         Dimensions:
             time: 1 (unlimited)
-            y: Number of latitude indices
-            x: Number of longitude indices
+            <y_dim_name>: Number of y-axis indices (dynamically named from config)
+            <x_dim_name>: Number of x-axis indices (dynamically named from config)
             tracks: Number of active tracks in this specific timestep
 
         Variables:
@@ -903,19 +833,13 @@ def save_tracking_result(
     filename = f"tracking_{time_val.strftime('%Y%m%dT%H')}.nc"
     output_filepath = os.path.join(structured_dir, filename)
 
-    # 1. Determine Grid Type
-    lat_1d = tracking_data_for_timestep["lat"]
-    lon_1d = tracking_data_for_timestep["lon"]
-    lat_2d = tracking_data_for_timestep["lat2d"]
+    # 1. Extract dimensions from grid_info (The new way)
+    y_dim = grid_info["y_dim_name"]
+    x_dim = grid_info["x_dim_name"]
+    y_1d = grid_info["lat1d"]
+    x_1d = grid_info["lon1d"]
 
-    is_regular = _is_regular_grid(lat_1d, lon_1d, lat_2d)
-
-    if is_regular:
-        y_dim, x_dim = "lat", "lon"
-    else:
-        y_dim, x_dim = "rlat", "rlon"
-
-    # 2. Process Center Points
+    # 2. Process Center Points and Boundary Flags (From your old function)
     centers_dict = tracking_data_for_timestep.get("tracking_centers", {})
     grid = tracking_data_for_timestep["mcs_id"]
     if grid.ndim == 3:
@@ -956,7 +880,7 @@ def save_tracking_result(
         active_lons = []
         active_boundary_flags = np.array([], dtype=np.int8)
 
-    # 3. Extract Grids
+    # 3. Extract Grids with time dimension
     robust_mcs_id_arr = np.expand_dims(
         tracking_data_for_timestep["robust_mcs_id"], axis=0
     )
@@ -965,7 +889,7 @@ def save_tracking_result(
         tracking_data_for_timestep["mcs_id_merge_split"], axis=0
     )
 
-    # 4. Create Dataset
+    # 4. Create Dataset structure
     data_vars = {
         "robust_mcs_id": (["time", y_dim, x_dim], robust_mcs_id_arr),
         "mcs_id": (["time", y_dim, x_dim], mcs_id_arr),
@@ -976,77 +900,57 @@ def save_tracking_result(
         "active_track_touches_boundary": (["tracks"], active_boundary_flags),
     }
 
-    if not is_regular:
-        data_vars["rotated_pole"] = ([], 0)
-
     ds = xr.Dataset(
         data_vars=data_vars,
         coords={
             "time": [time_val],
-            y_dim: lat_1d,
-            x_dim: lon_1d,
+            y_dim: y_1d,
+            x_dim: x_1d,
         },
     )
 
-    # ONLY Add 2D aux coordinates if the grid is rotated
-    if not is_regular:
-        ds["latitude"] = ((y_dim, x_dim), tracking_data_for_timestep["lat2d"])
-        ds["longitude"] = ((y_dim, x_dim), tracking_data_for_timestep["lon2d"])
+    # Always add true 2D geographic coordinates from grid_info
+    ds["latitude"] = ((y_dim, x_dim), grid_info["lat2d"])
+    ds["longitude"] = ((y_dim, x_dim), grid_info["lon2d"])
 
-    # Metadata
+    # 5. Metadata and Passthrough
     ds.attrs = {
         "title": "EMMA-Tracker Output",
         "institution": "Wegener Center for Climate and Global Change, University of Graz",
         "source": data_source,
         "history": f"Created on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "Conventions": "CF-1.6",
+        "Conventions": "CF-1.7",
         "project": "EMMA",
     }
-    if not is_regular:
-        ds.attrs["CORDEX_domain"] = "EUR-11"
 
     if config:
-        import json
-
         try:
             ds.attrs["run_configuration"] = json.dumps(config, default=str)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to serialize config: {e}")
 
-    # Coordinate Attributes
-    # IMPORTANT: Do NOT include 'axis' attribute.
-    ds[y_dim].attrs = {
-        "standard_name": "latitude" if is_regular else "grid_latitude",
-        "units": "degrees_north" if is_regular else "degrees",
-    }
-    ds[x_dim].attrs = {
-        "standard_name": "longitude" if is_regular else "grid_longitude",
-        "units": "degrees_east" if is_regular else "degrees",
-    }
+    # Re-attach the exact 1D attributes from the input file
+    ds[y_dim].attrs = grid_info.get("y_attrs", {})
+    ds[x_dim].attrs = grid_info.get("x_attrs", {})
+
     ds["time"].attrs = {"standard_name": "time"}
+    ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
+    ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
 
-    if not is_regular:
-        # Rotated grid attributes
-        ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
-        ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
+    # INJECT CF-COMPLIANT PROJECTION METADATA
+    cf_meta = grid_info.get("cf_metadata", {})
+    mapping_name = cf_meta.get("grid_mapping_name", "spatial_projection")
 
-        ds["rotated_pole"].attrs = {
-            "grid_mapping_name": "rotated_latitude_longitude",
-            "grid_north_pole_latitude": 39.25,
-            "grid_north_pole_longitude": -162.0,
-        }
+    ds[mapping_name] = ([], 0)
+    ds[mapping_name].attrs = cf_meta
 
     grid_vars = ["robust_mcs_id", "mcs_id", "mcs_id_merge_split"]
     for var in grid_vars:
-        if not is_regular:
-            ds[var].attrs["grid_mapping"] = "rotated_pole"
-            ds[var].attrs["coordinates"] = "latitude longitude"
-        else:
-            # Regular: Remove 'coordinates' attribute.
-            if "coordinates" in ds[var].attrs:
-                del ds[var].attrs["coordinates"]
+        ds[var].attrs["grid_mapping"] = mapping_name
+        ds[var].attrs["coordinates"] = "latitude longitude"
         ds[var].attrs["cell_methods"] = "time: point"
 
+    # Specific Variable Attributes
     ds["robust_mcs_id"].attrs.update(
         {"long_name": "Robust Mature MCS Track IDs", "units": "1"}
     )
@@ -1060,5 +964,4 @@ def save_tracking_result(
         "units": "1",
     }
 
-    # --- USE SHARED SAVER ---
     save_dataset_to_netcdf(ds, output_filepath)

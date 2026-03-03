@@ -23,6 +23,7 @@ from .input_output import (
     load_individual_detection_files,
     save_tracking_result,
 )
+from .grid_manager import build_grid_info, verify_and_build_grid_template
 from .postprocessing import run_postprocessing_year
 
 # Set a global exception handler to log uncaught exceptions
@@ -41,7 +42,8 @@ def process_file(
     moderate_precip_threshold,
     min_size_threshold,
     min_nr_plumes,
-    lifted_index_percentage
+    lifted_index_percentage,
+    grid_info,
 ):
     """
     Wrapper function to run MCS detection for a single file.
@@ -59,7 +61,8 @@ def process_file(
         moderate_precip_threshold,
         min_size_threshold,
         min_nr_plumes,
-        lifted_index_percentage
+        lifted_index_percentage,
+        grid_info,
     )
     return result
 
@@ -119,22 +122,26 @@ def main():
     os.makedirs(raw_tracking_output_dir, exist_ok=True)
 
     # Track the file mode for each phase.
-    log_modes = {
-        "detection": "w",
-        "tracking": "w",
-        "postprocessing": "w"
-    }
+    log_modes = {"detection": "w", "tracking": "w", "postprocessing": "w"}
 
     # Initialize logging based on the starting phase
     if cfg.detection:
-        setup_logging(detection_output_path, filename="detection.log", mode=log_modes["detection"])
-        log_modes["detection"] = "a" 
+        setup_logging(
+            detection_output_path, filename="detection.log", mode=log_modes["detection"]
+        )
+        log_modes["detection"] = "a"
     elif cfg.tracking:
-        setup_logging(raw_tracking_output_dir, filename="tracking.log", mode=log_modes["tracking"])
+        setup_logging(
+            raw_tracking_output_dir, filename="tracking.log", mode=log_modes["tracking"]
+        )
         log_modes["tracking"] = "a"
     elif cfg.postprocessing:
         os.makedirs(tracking_output_dir, exist_ok=True)
-        setup_logging(tracking_output_dir, filename="postprocessing.log", mode=log_modes["postprocessing"])
+        setup_logging(
+            tracking_output_dir,
+            filename="postprocessing.log",
+            mode=log_modes["postprocessing"],
+        )
         log_modes["postprocessing"] = "a"
 
     # --- 2. FIND, FILTER, AND GROUP INPUT FILES ---
@@ -176,7 +183,9 @@ def main():
                 )
             )
             if not all_li_files:
-                raise FileNotFoundError("lifted index data directory is empty. Exiting.")
+                raise FileNotFoundError(
+                    "lifted index data directory is empty. Exiting."
+                )
             logger.info(
                 f"Found {len(all_li_files)} total lifted index files in source directory."
             )
@@ -202,43 +211,59 @@ def main():
             years_to_iterate = sorted(years_to_process)
         else:
             years_to_iterate = []
-            
+
             # Check detection output for existing year folders
             if os.path.exists(detection_output_path):
-                subdirs = [d for d in os.listdir(detection_output_path) if os.path.isdir(os.path.join(detection_output_path, d))]
+                subdirs = [
+                    d
+                    for d in os.listdir(detection_output_path)
+                    if os.path.isdir(os.path.join(detection_output_path, d))
+                ]
                 for d in subdirs:
                     if d.isdigit():
                         years_to_iterate.append(int(d))
-            
+
             # Check tracking output (useful if detection files were deleted to save space)
             if not years_to_iterate and os.path.exists(raw_tracking_output_dir):
-                subdirs = [d for d in os.listdir(raw_tracking_output_dir) if os.path.isdir(os.path.join(raw_tracking_output_dir, d))]
+                subdirs = [
+                    d
+                    for d in os.listdir(raw_tracking_output_dir)
+                    if os.path.isdir(os.path.join(raw_tracking_output_dir, d))
+                ]
                 for d in subdirs:
                     if d.isdigit():
                         years_to_iterate.append(int(d))
 
             years_to_iterate = sorted(list(set(years_to_iterate)))
-            
+
         if not years_to_iterate:
-             logger.warning("Detection is off and no years specified in config or found in output directories. Nothing to do.")
+            logger.warning(
+                "Detection is off and no years specified in config or found in output directories. Nothing to do."
+            )
 
     # --- 3. MAIN YEARLY PROCESSING LOOP ---
+    global_grid_template = None
+
     for year in years_to_iterate:
         logger.info(f"--- Starting processing for year: {year} ---")
-        
+
         # Retrieve files for the current year (empty if detection is skipped)
         precip_file_list_year = files_by_year.get(year, [])
 
         if cfg.detection_parameters.use_lifted_index:
             li_files_year = li_files_by_year.get(year, [])
         else:
-            li_files_year = [] 
-            
+            li_files_year = []
+
         # --- 3a. DETECTION PHASE ---
         if cfg.detection:
             # Configure logging for detection
-            setup_logging(detection_output_path, filename="detection.log", mode=log_modes["detection"])
-            log_modes["detection"] = "a" 
+            setup_logging(
+                detection_output_path,
+                filename="detection.log",
+                mode=log_modes["detection"],
+            )
+            log_modes["detection"] = "a"
 
             matched_precip_files = []
             matched_li_files = []
@@ -246,27 +271,52 @@ def main():
             # Perform Alignment
             if cfg.detection_parameters.use_lifted_index:
                 logger.info("Aligning Precipitation and Lifted Index files...")
-                file_pairs, miss_li, miss_precip = align_files_by_hour(precip_file_list_year, li_files_year)
-                
+                file_pairs, miss_li, miss_precip = align_files_by_hour(
+                    precip_file_list_year, li_files_year
+                )
+
                 if miss_li:
-                    logger.warning(f"Year {year}: {len(miss_li)} Precip files have no matching LI file. Skipped.")
+                    logger.warning(
+                        f"Year {year}: {len(miss_li)} Precip files have no matching LI file. Skipped."
+                    )
                 if miss_precip:
-                    logger.info(f"Year {year}: {len(miss_precip)} LI files unused (no Precip).")
+                    logger.info(
+                        f"Year {year}: {len(miss_precip)} LI files unused (no Precip)."
+                    )
 
                 if not file_pairs:
-                    logger.warning(f"No valid file pairs found for year {year}. Skipping detection.")
+                    logger.warning(
+                        f"No valid file pairs found for year {year}. Skipping detection."
+                    )
                     continue
-                
+
                 # Unpack pairs
                 matched_precip_files = [p[0] for p in file_pairs]
                 matched_li_files = [p[1] for p in file_pairs]
-                
+
             else:
                 # No alignment needed
                 matched_precip_files = precip_file_list_year
                 matched_li_files = [None] * len(precip_file_list_year)
-            
-            logger.info(f"Running detection for {len(precip_file_list_year)} files in {year}...")
+
+            if global_grid_template is None and matched_precip_files:
+                first_p = matched_precip_files[0]
+                first_l = (
+                    matched_li_files[0]
+                    if cfg.detection_parameters.use_lifted_index
+                    else None
+                )
+
+                global_grid_template = verify_and_build_grid_template(
+                    first_precip_file=first_p,
+                    first_li_file=first_l,
+                    y_dim_name=lat_name,
+                    x_dim_name=lon_name,
+                )
+
+            logger.info(
+                f"Running detection for {len(precip_file_list_year)} files in {year}..."
+            )
 
             if cfg.use_multiprocessing:
                 with concurrent.futures.ProcessPoolExecutor(
@@ -287,7 +337,8 @@ def main():
                             cfg.detection_parameters.moderate_precip_threshold,
                             cfg.detection_parameters.min_size_threshold,
                             cfg.detection_parameters.min_nr_plumes,
-                            cfg.detection_parameters.lifted_index_percentage_threshold
+                            cfg.detection_parameters.lifted_index_percentage_threshold,
+                            global_grid_template,
                         )
                         for precip_file, li_file in zip(
                             matched_precip_files, matched_li_files
@@ -297,7 +348,10 @@ def main():
                         try:
                             detection_result = future.result()
                             save_detection_result(
-                                detection_result, detection_output_path, data_source
+                                detection_result,
+                                detection_output_path,
+                                data_source,
+                                global_grid_template,
                             )
                         except Exception as e:
                             logger.error(f"A detection task failed: {e}")
@@ -316,10 +370,14 @@ def main():
                         cfg.detection_parameters.moderate_precip_threshold,
                         cfg.detection_parameters.min_size_threshold,
                         cfg.detection_parameters.min_nr_plumes,
-                        cfg.detection_parameters.lifted_index_percentage_threshold
+                        cfg.detection_parameters.lifted_index_percentage_threshold,
+                        global_grid_template,
                     )
                     save_detection_result(
-                        detection_result, detection_output_path, data_source
+                        detection_result,
+                        detection_output_path,
+                        data_source,
+                        global_grid_template,
                     )
             logger.info(f"Detection for year {year} finished.")
             print(f"Detection for year {year} finished.")
@@ -327,14 +385,18 @@ def main():
         # --- 3b. & 3c. TRACKING PHASE ---
         if cfg.tracking:
             # Configure logging for tracking
-            setup_logging(raw_tracking_output_dir, filename="tracking.log", mode=log_modes["tracking"])
+            setup_logging(
+                raw_tracking_output_dir,
+                filename="tracking.log",
+                mode=log_modes["tracking"],
+            )
             log_modes["tracking"] = "a"
-            
+
             logger.info(f"Loading all detection files for year {year}...")
 
             year_detection_dir = os.path.join(detection_output_path, str(year))
-            detection_results, grid_coords = load_individual_detection_files(
-                year_detection_dir, cfg.detection_parameters.use_lifted_index
+            detection_results, tracking_grid_info = load_individual_detection_files(
+                year_detection_dir, cfg.use_li_filter, cfg.lat_name, cfg.lon_name
             )
 
             # Apply month filter if specified
@@ -372,7 +434,7 @@ def main():
                 tracking_centers_list,
             ) = track_mcs(
                 detection_results,
-                grid_coords,
+                tracking_grid_info,
                 # Pass strict values from nested config
                 cfg.tracking_parameters.main_lifetime_thresh,
                 cfg.tracking_parameters.main_area_thresh,
@@ -401,17 +463,20 @@ def main():
                 # Pass full config object if save_tracking_result needs it, or just necessary parts
                 # Assuming save_tracking_result expects 'config' (dict-like or object)
                 save_tracking_result(
-                    tracking_data_for_timestep, raw_tracking_output_dir, data_source, cfg
+                    tracking_data_for_timestep,
+                    raw_tracking_output_dir,
+                    data_source,
+                    tracking_grid_info,
+                    cfg,
                 )
-            
+
             del detection_results
             del mcs_id
             del robust_mcs_id
             del lifetime_list
-            gc.collect() 
+            gc.collect()
             logger.info(f"--- Finished tracking for year: {year} ---")
             print(f"--- Finished tracking for year: {year} ---")
-
 
         # --- 3e. POST-PROCESSING PHASE ---
         if not cfg.detection_parameters.use_lifted_index:
@@ -423,9 +488,13 @@ def main():
 
                 # Configure logging for post-processing
                 os.makedirs(tracking_output_dir, exist_ok=True)
-                setup_logging(tracking_output_dir, filename="postprocessing.log", mode=log_modes["postprocessing"])
+                setup_logging(
+                    tracking_output_dir,
+                    filename="postprocessing.log",
+                    mode=log_modes["postprocessing"],
+                )
                 log_modes["postprocessing"] = "a"
-                
+
                 logger.info("Logging initialized for POST-PROCESSING phase.")
                 try:
                     run_postprocessing_year(
@@ -436,7 +505,7 @@ def main():
                         lifted_index_data_var,
                         lat_name,
                         lon_name,
-                        cfg
+                        cfg,
                     )
                 except Exception as e:
                     logger.error(f"Post-processing failed for year {year}: {e}")
