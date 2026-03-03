@@ -21,7 +21,7 @@ from .tracking_helper_func import (
     handle_no_overlap,
     compute_max_consecutive,
     attempt_advection_rescue,
-    calculate_grid_area_map
+    calculate_grid_area_map,
 )
 from .tracking_merging import handle_merging
 from .tracking_splitting import handle_splitting
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def track_mcs(
     detection_results,
-    grid_coords,
+    grid_info,
     main_lifetime_thresh,
     main_area_thresh,
     nmaxmerge,
@@ -59,7 +59,7 @@ def track_mcs(
             - "lon2d" (np.ndarray): 2D array of longitudes.
             - "lat" (np.ndarray): 1D array of latitudes.
             - "lon" (np.ndarray): 1D array of longitudes.
-        grid_coords (dict): dictionary containing the grid coordinates: lat, lon, lat2d, lon2d
+        grid_info (dict): dictionary containing the globally verified spatial dimensions and area map.
         main_lifetime_thresh (int): The minimum number of consecutive hours a track must simultaneously meet the area and LI criteria to be considered a main MCS.
         main_area_thresh (float): The minimum area (in km²) a track must have to be considered in its mature phase.
         nmaxmerge (int): The maximum number of parent systems to consider in a single merging event.
@@ -89,10 +89,11 @@ def track_mcs(
     tracking_centers_list = []
     time_list = []
 
-    lat = grid_coords["lat"]
-    lon = grid_coords["lon"]
-    lat2d = grid_coords["lat2d"]
-    lon2d = grid_coords["lon2d"]
+    lat = grid_info["lat1d"]
+    lon = grid_info["lon1d"]
+    lat2d = grid_info["lat2d"]
+    lon2d = grid_info["lon2d"]
+    grid_area_map_km2 = grid_info["area_map"]
 
     lifetime_dict = defaultdict(int)
     max_area_dict = defaultdict(float)
@@ -106,8 +107,6 @@ def track_mcs(
 
     # Determine if LI filtering is available (only need to check detection_results[0])
     use_li = use_li_filter and ("lifted_index_regions" in detection_results[0])
-
-    grid_area_map_km2 = calculate_grid_area_map(grid_coords)
 
     for idx, detection_result in enumerate(detection_results):
         final_labeled_regions = detection_result["final_labeled_regions"]
@@ -173,7 +172,7 @@ def track_mcs(
             labels_no_overlap = [
                 lbl for lbl, old_ids in overlap_map.items() if not old_ids
             ]
- 
+
             if labels_no_overlap:
                 # We need a map of only the real overlaps to calculate the flow vector
                 clean_overlap_map = {
@@ -184,23 +183,25 @@ def track_mcs(
                     previous_labeled_regions,
                     final_labeled_regions,
                     previous_cluster_ids,
-                    clean_overlap_map, # Pass the clean map
+                    clean_overlap_map,  # Pass the clean map
                     grid_area_map_km2,
                     overlap_threshold=10,
                 )
-             
+
                 if rescued_overlaps:
                     # Add the rescued overlaps back to the main map for processing
                     overlap_map.update(rescued_overlaps)
                     rescued_labels = set(rescued_overlaps.keys())
-                    labels_no_overlap = [lbl for lbl in labels_no_overlap if lbl not in rescued_labels]
+                    labels_no_overlap = [
+                        lbl for lbl in labels_no_overlap if lbl not in rescued_labels
+                    ]
 
             for new_lbl, old_ids in overlap_map.items():
                 if len(old_ids) == 0:
                     # This condition should ideally not be met anymore for labels that were checked,
                     # but we keep it for robustness.
                     if new_lbl not in labels_no_overlap:
-                         labels_no_overlap.append(new_lbl)
+                        labels_no_overlap.append(new_lbl)
                 elif len(old_ids) == 1:
                     chosen_id = old_ids[0]
                     handle_continuation(
@@ -216,7 +217,7 @@ def track_mcs(
                     temp_assigned[new_lbl] = chosen_id
                     if use_li:
                         current_mask = final_labeled_regions == new_lbl
-                        current_convective = np.all(li_regions[current_mask] == 1) 
+                        current_convective = np.all(li_regions[current_mask] == 1)
                     else:
                         current_convective = True  # sets the criteria to True in case; Makes the later check robust
                     robust_flag_dict[chosen_id] = (
@@ -320,7 +321,7 @@ def track_mcs(
                     break
             centers_this_timestep[str(tid)] = center_latlon
         tracking_centers_list.append(centers_this_timestep)
-    
+
     # ---- Final Filtering Step ----
     logger.info("Starting efficient final filtering of tracks...")
 
@@ -354,7 +355,7 @@ def track_mcs(
         # Build boolean series for area and LI criteria using fast dictionary lookups
         bool_series_area = []
         bool_series_li = []
-        
+
         for i in range(len(mcs_ids_list)):
             props = track_properties_by_time.get(tid, {}).get(i)
             if props:
@@ -368,7 +369,7 @@ def track_mcs(
 
         # Condition 1: Check if the track has a mature phase (based on area) that meets the lifetime threshold.
         if compute_max_consecutive(bool_series_area) >= main_lifetime_thresh:
-            
+
             # If the first condition is met, we then check the LI condition.
             # We create a list that is True only at timesteps where BOTH the area and LI criteria were met.
             li_during_mature_phase_list = [
