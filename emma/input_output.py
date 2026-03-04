@@ -745,38 +745,54 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
         "project": "EMMA",
     }
 
-    # Re-attach the exact 1D attributes from the input file
-    ds[y_dim].attrs = grid_info.get("y_attrs", {})
-    ds[x_dim].attrs = grid_info.get("x_attrs", {})
-
     ds["time"].attrs = {"standard_name": "time"}
     ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
     ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
 
-    # --- INJECT CF-COMPLIANT PROJECTION ---
+    # ---------------------------------------------------------
+    # STRICT NCVIEW SANITIZATION 
+    # ---------------------------------------------------------
     cf_meta = grid_info.get("cf_metadata", {})
-    mapping_name = cf_meta.get("grid_mapping_name", "spatial_projection")
+    mapping_name = cf_meta.get("grid_mapping_name", "crs")
 
-    ds[mapping_name] = ([], 0)
-    ds[mapping_name].attrs = cf_meta
+    ds[y_dim].attrs = {}
+    ds[x_dim].attrs = {}
+
+    if mapping_name == "rotated_latitude_longitude":
+        ds[y_dim].attrs["standard_name"] = "grid_latitude"
+        ds[y_dim].attrs["units"] = "degrees"
+        ds[x_dim].attrs["standard_name"] = "grid_longitude"
+        ds[x_dim].attrs["units"] = "degrees"
+        var_name = "rotated_pole"
+        
+        # Hard-force ONLY the exact 3 attributes ncview supports
+        ds[var_name] = ([], np.int32(0))
+        ds[var_name].attrs = {
+            "grid_mapping_name": "rotated_latitude_longitude",
+            "grid_north_pole_latitude": float(cf_meta.get("grid_north_pole_latitude", 39.25)),
+            "grid_north_pole_longitude": float(cf_meta.get("grid_north_pole_longitude", -162.0))
+        }
+    else:
+        ds[y_dim].attrs["standard_name"] = "latitude"
+        ds[y_dim].attrs["units"] = "degrees_north"
+        ds[x_dim].attrs["standard_name"] = "longitude"
+        ds[x_dim].attrs["units"] = "degrees_east"
+        var_name = "crs"
+        ds[var_name] = ([], np.int32(0))
+        ds[var_name].attrs = {"grid_mapping_name": mapping_name}
 
     for var in ["final_labeled_regions", "lifted_index_regions"]:
-        ds[var].attrs["grid_mapping"] = mapping_name
-        ds[var].attrs["coordinates"] = "latitude longitude"
-        ds[var].attrs["cell_methods"] = "time: point"
+        if var in ds:
+            ds[var].attrs["grid_mapping"] = var_name
+            ds[var].attrs["coordinates"] = "latitude longitude"
+            ds[var].attrs["cell_methods"] = "time: point"
 
-    # Specific Variable Attributes
-    ds["final_labeled_regions"].attrs.update(
-        {"long_name": "Labeled Convective Regions", "units": "1"}
-    )
-    ds["lifted_index_regions"].attrs.update(
-        {"long_name": "Lifted Index Mask", "units": "1"}
-    )
+    ds["final_labeled_regions"].attrs.update({"long_name": "Labeled Convective Regions", "units": "1"})
+    ds["lifted_index_regions"].attrs.update({"long_name": "Lifted Index Mask", "units": "1"})
     ds["label_id"].attrs.update({"long_name": "Feature Label IDs"})
 
-    # --- USE SHARED SAVER ---
     save_dataset_to_netcdf(ds, output_filepath)
-
+    
 
 def save_tracking_result(
     tracking_data_for_timestep, output_dir, data_source, grid_info, config=None
@@ -929,39 +945,53 @@ def save_tracking_result(
         except Exception as e:
             logger.warning(f"Failed to serialize config: {e}")
 
-    # Re-attach the exact 1D attributes from the input file
-    ds[y_dim].attrs = grid_info.get("y_attrs", {})
-    ds[x_dim].attrs = grid_info.get("x_attrs", {})
-
     ds["time"].attrs = {"standard_name": "time"}
     ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
     ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
 
-    # INJECT CF-COMPLIANT PROJECTION METADATA
+    # ---------------------------------------------------------
+    # STRICT NCVIEW SANITIZATION 
+    # ---------------------------------------------------------
     cf_meta = grid_info.get("cf_metadata", {})
-    mapping_name = cf_meta.get("grid_mapping_name", "spatial_projection")
+    mapping_name = cf_meta.get("grid_mapping_name", "crs")
 
-    ds[mapping_name] = ([], 0)
-    ds[mapping_name].attrs = cf_meta
+    ds[y_dim].attrs = {}
+    ds[x_dim].attrs = {}
+
+    if mapping_name == "rotated_latitude_longitude":
+        ds[y_dim].attrs["standard_name"] = "grid_latitude"
+        ds[y_dim].attrs["units"] = "degrees"
+        ds[x_dim].attrs["standard_name"] = "grid_longitude"
+        ds[x_dim].attrs["units"] = "degrees"
+        var_name = "rotated_pole"
+        
+        # Hard-force ONLY the exact 3 attributes ncview supports
+        ds[var_name] = ([], np.int32(0))
+        ds[var_name].attrs = {
+            "grid_mapping_name": "rotated_latitude_longitude",
+            "grid_north_pole_latitude": float(cf_meta.get("grid_north_pole_latitude", 39.25)),
+            "grid_north_pole_longitude": float(cf_meta.get("grid_north_pole_longitude", -162.0))
+        }
+    else:
+        ds[y_dim].attrs["standard_name"] = "latitude"
+        ds[y_dim].attrs["units"] = "degrees_north"
+        ds[x_dim].attrs["standard_name"] = "longitude"
+        ds[x_dim].attrs["units"] = "degrees_east"
+        var_name = "crs"
+        ds[var_name] = ([], np.int32(0))
+        ds[var_name].attrs = {"grid_mapping_name": mapping_name}
 
     grid_vars = ["robust_mcs_id", "mcs_id", "mcs_id_merge_split"]
     for var in grid_vars:
-        ds[var].attrs["grid_mapping"] = mapping_name
-        ds[var].attrs["coordinates"] = "latitude longitude"
-        ds[var].attrs["cell_methods"] = "time: point"
+        if var in ds:
+            ds[var].attrs["grid_mapping"] = var_name
+            ds[var].attrs["coordinates"] = "latitude longitude"
+            ds[var].attrs["cell_methods"] = "time: point"
 
-    # Specific Variable Attributes
-    ds["robust_mcs_id"].attrs.update(
-        {"long_name": "Robust Mature MCS Track IDs", "units": "1"}
-    )
+    ds["robust_mcs_id"].attrs.update({"long_name": "Robust Mature MCS Track IDs", "units": "1"})
     ds["mcs_id"].attrs.update({"long_name": "Main MCS Track IDs", "units": "1"})
-    ds["mcs_id_merge_split"].attrs.update(
-        {"long_name": "Family Tree Track IDs", "units": "1"}
-    )
+    ds["mcs_id_merge_split"].attrs.update({"long_name": "Family Tree Track IDs", "units": "1"})
     ds["active_track_id"].attrs = {"long_name": "Active Track IDs"}
-    ds["active_track_touches_boundary"].attrs = {
-        "long_name": "Boundary Touching Flag",
-        "units": "1",
-    }
+    ds["active_track_touches_boundary"].attrs = {"long_name": "Boundary Touching Flag", "units": "1"}
 
     save_dataset_to_netcdf(ds, output_filepath)
