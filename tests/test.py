@@ -49,7 +49,7 @@ def setup_test_environment():
     config['filtered_tracking_output_dir'] = str(OUTPUT_DIR / "tracking_filtered")
     
     # --- Disable Post-processing for this test ---
-    config['run_postprocessing'] = False
+    config['postprocessing'] = False
     
     # Save temp config
     temp_config_path = TEST_DIR / "temp_config.yaml"
