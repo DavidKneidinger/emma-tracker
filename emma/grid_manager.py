@@ -1,5 +1,6 @@
 import numpy as np
 import logging
+import xarray as xr
 from pyproj import CRS, Geod
 
 logger = logging.getLogger(__name__)
@@ -24,9 +25,13 @@ def get_attr_case_insensitive(obj, target_attr):
 
 def extract_cf_metadata(ds, lat_name, lon_name):
     """
-    Robustly identifies the grid type and translates it into a CF-compliant
-    dictionary using the pyproj library. Handles standard CF conventions as well
-    as proprietary GRIB attributes.
+    Extracts grid mapping metadata.    
+    Instead of using pyproj to generate a modernized CF-1.8 dictionary (which 
+    can break older visualization tools like ncview), this function strictly 
+    preserves the original metadata structure of the input file to maintain 
+    provenance and compatibility. It only intervenes to correct missing essential 
+    CF fields and strip known bloated attributes (like crs_wkt) added by 
+    intermediate remapping tools.
 
     Parameters:
     - ds: xarray Dataset containing the input data.
@@ -34,68 +39,67 @@ def extract_cf_metadata(ds, lat_name, lon_name):
     - lon_name: Name of the longitude/x-dimension variable.
 
     Returns:
-    - cf_dict: A 100% CF-compliant dictionary of projection attributes.
+    - cf_dict: A dictionary of projection attributes, including a special 
+               '__var_name__' key to remember the original dummy variable's name.
     """
-
     # 1. Check for existing CF-compliant 'grid_mapping' variable
-    target_vars = list(ds.data_vars) + [lat_name, lon_name, "latitude", "longitude"]
+    target_vars = list(ds.data_vars) + [lat_name, lon_name, 'latitude', 'longitude', 'lat', 'lon']
     for v_name in target_vars:
-        if v_name not in ds:
-            continue
-        mapping_var_name = get_attr_case_insensitive(ds[v_name], "grid_mapping")
-
+        if v_name not in ds: continue
+        mapping_var_name = get_attr_case_insensitive(ds[v_name], 'grid_mapping')
+        
         if mapping_var_name and mapping_var_name in ds:
-            mapping_var = ds[mapping_var_name]
-            try:
-                # Use pyproj to standardize and validate the existing CF dict
-                crs = CRS.from_cf(mapping_var.attrs)
-                return crs.to_cf()
-            except Exception as e:
-                logger.warning(
-                    f"Failed to parse existing CF grid_mapping with pyproj: {e}"
-                )
-                return mapping_var.attrs.copy()
+            cf_dict = ds[mapping_var_name].attrs.copy()
+            
+            # --- THE "IN-BETWEEN" SMART PATCHING ---
+            # 1. Ensure grid_mapping_name exists (Patch missing data)
+            if 'grid_mapping_name' not in cf_dict:
+                if 'grid_north_pole_latitude' in cf_dict:
+                    cf_dict['grid_mapping_name'] = 'rotated_latitude_longitude'
+                else:
+                    cf_dict['grid_mapping_name'] = 'unknown'
+            
+            # 2. Strip GDAL/pyproj/CDO bloat if it was accidentally inherited
+            keys_to_remove = [
+                "crs_wkt", "semi_major_axis", "semi_minor_axis", "inverse_flattening",
+                "reference_ellipsoid_name", "longitude_of_prime_meridian",
+                "prime_meridian_name", "geographic_crs_name", "horizontal_datum_name"
+            ]
+            for k in keys_to_remove:
+                cf_dict.pop(k, None)
+            
+            # 3. Store the original variable name (e.g., "rotated_pole") so the saver can use it
+            cf_dict["__var_name__"] = str(mapping_var_name)
+            
+            return cf_dict
 
-    # 2. Fallback: Search for GRIB-specific grid type tags and translate to CF
+    # 2. Fallback: Search for GRIB-specific grid type tags and translate
     search_objs = [ds] + [ds[v] for v in ds.data_vars]
     for obj in search_objs:
-        grib_type = get_attr_case_insensitive(obj, "GRIB_gridType")
+        grib_type = get_attr_case_insensitive(obj, 'GRIB_gridType')
         if grib_type:
-            if grib_type.lower() == "lambert":
-                # Translate CERRA/GRIB Lambert parameters into a PROJ string/dict
-                lat_1 = get_attr_case_insensitive(obj, "GRIB_Latin1InDegrees") or 50.0
-                lat_2 = get_attr_case_insensitive(obj, "GRIB_Latin2InDegrees") or 50.0
-                lat_0 = get_attr_case_insensitive(obj, "GRIB_LaDInDegrees") or 50.0
-                lon_0 = get_attr_case_insensitive(obj, "GRIB_LoVInDegrees") or 8.0
-
-                crs = CRS.from_dict(
-                    {
-                        "proj": "lcc",
-                        "lat_1": lat_1,
-                        "lat_2": lat_2,
-                        "lat_0": lat_0,
-                        "lon_0": lon_0,
-                        "a": 6371229,  # Standard GRIB Earth Radius
-                        "b": 6371229,
-                    }
-                )
-                logger.info(
-                    "Successfully translated GRIB Lambert projection to CF standards."
-                )
-                return crs.to_cf()
+            if grib_type.lower() == 'lambert':
+                lat_1 = get_attr_case_insensitive(obj, 'GRIB_Latin1InDegrees') or 50.0
+                lat_2 = get_attr_case_insensitive(obj, 'GRIB_Latin2InDegrees') or 50.0
+                lat_0 = get_attr_case_insensitive(obj, 'GRIB_LaDInDegrees') or 50.0
+                lon_0 = get_attr_case_insensitive(obj, 'GRIB_LoVInDegrees') or 8.0
+                
+                return {
+                    "__var_name__": "lambert_conformal",
+                    "grid_mapping_name": "lambert_conformal_conic",
+                    "standard_parallel": [lat_1, lat_2],
+                    "latitude_of_projection_origin": lat_0,
+                    "longitude_of_central_meridian": lon_0
+                }
             else:
-                logger.warning(
-                    f"Unhandled GRIB grid type: {grib_type}. Output may lack projection metadata."
-                )
-                return {"grid_mapping_name": grib_type}
+                logger.warning(f"Unhandled GRIB grid type: {grib_type}.")
+                return {'__var_name__': 'crs', 'grid_mapping_name': grib_type}
 
-    # 3. Last Resort: Inference from dimension names (No formal projection defined)
+    # 3. Last Resort Inference
     if "rlat" in lat_name.lower() or "rlon" in lon_name.lower():
-        return {"grid_mapping_name": "rotated_latitude_longitude"}
-    elif lat_name.lower() in ["y", "x"]:
-        return {"grid_mapping_name": "lambert_conformal_conic"}
-
-    return {"grid_mapping_name": "latitude_longitude"}
+        return {'__var_name__': 'rotated_pole', 'grid_mapping_name': 'rotated_latitude_longitude'}
+        
+    return {'__var_name__': 'crs', 'grid_mapping_name': 'latitude_longitude'}
 
 
 def compute_grid_area(lat2d, lon2d):
