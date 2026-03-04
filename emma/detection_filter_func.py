@@ -35,7 +35,8 @@ def lifted_index_filter(
 
 
 def filter_mcs_candidates(
-    clusters, convective_plumes, min_size_threshold, min_nr_plumes):
+    clusters, convective_plumes, min_size_threshold, min_nr_plumes
+):
     """
     Filter clusters to identify MCS candidates based on area and number of convective plumes.
 
@@ -57,7 +58,7 @@ def filter_mcs_candidates(
         plumes_in_cluster = np.unique(convective_plumes[cluster_mask])
         num_plumes = len(plumes_in_cluster[plumes_in_cluster != 0])
 
-        if np.sum(cluster_mask)  >= min_size_threshold and num_plumes >= min_nr_plumes:
+        if np.sum(cluster_mask) >= min_size_threshold and num_plumes >= min_nr_plumes:
             mcs_candidate_labels.append(label_value)
 
     return mcs_candidate_labels

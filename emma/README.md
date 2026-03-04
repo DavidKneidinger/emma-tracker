@@ -83,6 +83,7 @@
  
  ## 4. Best Practices for Model Evaluation
  
- 1.  **Regridding:** When comparing models with different resolutions (e.g., RCM 12km vs CPM 3km), regrid the precipitation to a common grid *before* tracking to ensure fair area comparisons.
+ 1.  **Regridding:** When comparing models with different resolutions (e.g., RCM 12km vs CPM 3km), remap the data to a common grid *before* tracking to ensure fair comparisons.
  2.  **Boundary Flag:** Always use the `active_track_touches_boundary` flag to filter out incomplete tracks when analyzing duration.
- 3.  **Tuning:** The default thresholds are tuned for Continental Europe. If applying to the Tropics or US Great Plains, recalculate the `heavy_precip_threshold` (P99).
+ 3.  **Tuning:** The default thresholds are tuned for Europe. If applying to the Tropics, US Great Plains or other regions, recalculate the `heavy_precip_threshold` (P99). And also checking
+ sensitivity of several thresholds and check the climatology against known patterns (e.g., diurnal cycle, seasonal cycle) is recommended.
