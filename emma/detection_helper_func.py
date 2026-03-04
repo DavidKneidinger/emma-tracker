@@ -1,15 +1,13 @@
 import numpy as np
 import logging
 from collections import defaultdict
-from scipy.ndimage import (
-    binary_dilation,
-    generate_binary_structure,
-    gaussian_filter
-)
+from scipy.ndimage import binary_dilation, generate_binary_structure, gaussian_filter
 from skimage.measure import label as connected_label
 
 
-def smooth_precipitation_field(precipitation: np.ndarray, sigma: float = 1.0) -> np.ndarray:
+def smooth_precipitation_field(
+    precipitation: np.ndarray, sigma: float = 1.0
+) -> np.ndarray:
     """
     Apply a Gaussian filter to smooth a 2D field.
 
@@ -26,7 +24,7 @@ def smooth_precipitation_field(precipitation: np.ndarray, sigma: float = 1.0) ->
     Returns:
     - np.ndarray: The smoothed precipitation field as a 2D array.
     """
-    return gaussian_filter(precipitation, sigma=sigma, mode='reflect')
+    return gaussian_filter(precipitation, sigma=sigma, mode="reflect")
 
 
 def detect_cores_connected(precipitation, core_thresh=10.0, min_cluster_size=3):
@@ -142,7 +140,14 @@ def morphological_expansion_with_merging(
             pixel_claims = defaultdict(list)
             for lbl, pixset in expansions.items():
                 for r, c in pixset:
+                    # The expanding label claims it
                     pixel_claims[(r, c)].append(lbl)
+                    
+                    # THE FIX: Check if another label already owns this pixel
+                    existing_lbl = core_labels[r, c]
+                    if existing_lbl > 0 and existing_lbl != lbl:
+                        if existing_lbl not in pixel_claims[(r, c)]:
+                            pixel_claims[(r, c)].append(existing_lbl)
 
             # 2b) Detect collisions
             merges = []
@@ -226,87 +231,3 @@ def unify_merge_sets(merges):
                 new_merged.append(s)
         merged = new_merged
     return merged
-
-
-def unify_checkerboard_simple(
-    core_labels, precip, threshold=0.1, max_passes=10
-):  # TODO: should not be necessary if morphological_expansion_with_merging is working correctly
-    """
-    A simpler “lowest‐label‐wins” approach to fix checkerboard patterns by
-    repeatedly scanning for local adjacencies where a pixel can unify to a smaller label.
-
-    For each labeled pixel (r, c):
-      - Check its 8 neighbors.
-      - If any neighbor has a smaller label M < L, and either cell's precipitation
-        is >= threshold, unify label L -> M (lowest label wins).
-    This repeats up to max_passes times or until no more unifications occur,
-    eliminating checkerboard patches.
-
-    Args:
-        core_labels (np.ndarray):
-            2D integer array (labels > 0, 0 = background).
-        precip (np.ndarray):
-            2D float array, same shape as core_labels.
-        threshold (float):
-            Precipitation threshold to allow merging. If either pixel's precip
-            is >= threshold, we unify.
-        max_passes (int):
-            Limit on how many times we loop over the array to unify labels.
-
-    Returns:
-        np.ndarray:
-            Updated core_labels array with checkerboard boundaries minimized,
-            using a local “lowest label wins” rule.
-
-    Notes:
-        - Because we unify L -> M if M < L, large clusters with smaller IDs can
-          absorb neighboring clusters with bigger IDs if they share a boundary
-          above the threshold.
-        - In extreme cases, this can unify more than you want. Use with caution.
-        - Generally faster and easier than a full adjacency BFS approach, but can
-          require several passes for large domains.
-    """
-    nrows, ncols = core_labels.shape
-    changed = True
-    passes = 0
-
-    # Offsets for 8-neighborhood
-    neighbors_8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-
-    while changed and passes < max_passes:
-        changed = False
-        passes += 1
-
-        # We'll scan row by row
-        for r in range(nrows):
-            for c in range(ncols):
-                lbl = core_labels[r, c]
-                if lbl <= 0:
-                    continue
-
-                val_rc = precip[r, c]
-                # Check 8 neighbors
-                for dr, dc in neighbors_8:
-                    rr, cc = r + dr, c + dc
-                    if 0 <= rr < nrows and 0 <= cc < ncols:
-                        neighbor_lbl = core_labels[rr, cc]
-                        if neighbor_lbl > 0 and neighbor_lbl < lbl:
-                            # Check precipitation threshold
-                            val_neighbor = precip[rr, cc]
-                            if val_rc >= threshold or val_neighbor >= threshold:
-                                # unify lbl -> neighbor_lbl
-                                core_labels[core_labels == lbl] = neighbor_lbl
-                                changed = True
-                                # We must break out after a unify, because 'lbl' is gone
-                                break
-                if changed:
-                    # Once we've changed one pixel in this row, we might as well
-                    # proceed to next pixel. The entire cluster lbl might already
-                    # be overwritten
-                    # So we do break out of the for c loop:
-                    break
-            if changed:
-                # break out of the row loop as well
-                break
-
-    return core_labels

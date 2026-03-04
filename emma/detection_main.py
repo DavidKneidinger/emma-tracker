@@ -87,13 +87,6 @@ def detect_mcs_in_file(
         max_iterations=400,
     )
 
-    expanded_labels = unify_checkerboard_simple(
-        expanded_labels,
-        precipitation_smooth,
-        threshold=moderate_precip_threshold,
-        max_passes=10,
-    )
-
     # Step 4: Filter MCS candidates based on number of convective plumes, size and lifted index
     mcs_candidate_labels = filter_mcs_candidates(
         expanded_labels, core_labels, min_size_threshold, min_nr_plumes
