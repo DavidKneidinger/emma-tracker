@@ -5,8 +5,9 @@ from typing import List, Optional
 
 # --- NESTED SECTIONS ---
 
+
 @dataclass
-class DetectionParameters: # Fixed typo: Paramters -> Parameters
+class DetectionParameters:  # Fixed typo: Paramters -> Parameters
     use_lifted_index: bool
     min_size_threshold: int
     heavy_precip_threshold: float
@@ -15,11 +16,13 @@ class DetectionParameters: # Fixed typo: Paramters -> Parameters
     lifted_index_percentage_threshold: float
     lifted_index_threshold: float
 
+
 @dataclass
-class TrackingParameters: # Fixed typo: Paramters -> Parameters
+class TrackingParameters:  # Fixed typo: Paramters -> Parameters
     main_lifetime_thresh: int
     main_area_thresh: float
     nmaxmerge: int
+
 
 @dataclass
 class PostProcessingFilters:
@@ -27,7 +30,9 @@ class PostProcessingFilters:
     track_straightness_threshold: float
     max_area_volatility: float
 
+
 # --- MAIN CONFIG ---
+
 
 @dataclass
 class EmmaConfig:
@@ -72,33 +77,37 @@ class EmmaConfig:
         if not os.path.exists(path):
             raise FileNotFoundError(f"Config file not found: {path}")
 
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             data = yaml.safe_load(f)
 
         try:
             # Helper to extract and remove a section from the dict
             def pop_section(key, dataclass_type):
                 section_data = data.pop(key)
-                if section_data is None: 
+                if section_data is None:
                     raise KeyError(f"Section '{key}' is empty or missing.")
                 return dataclass_type(**section_data)
 
             # Build nested objects first
             # These keys MUST match your YAML exactly
-            det_params = pop_section('detection_parameters', DetectionParameters)
-            track_params = pop_section('tracking_parameters', TrackingParameters)
-            pp_filters = pop_section('postprocessing_filters', PostProcessingFilters)
+            det_params = pop_section("detection_parameters", DetectionParameters)
+            track_params = pop_section("tracking_parameters", TrackingParameters)
+            pp_filters = pop_section("postprocessing_filters", PostProcessingFilters)
 
             # Build main object
             return cls(
                 detection_parameters=det_params,
                 tracking_parameters=track_params,
                 postprocessing_filters=pp_filters,
-                **data # Unpacks the rest of the flat keys
+                **data,  # Unpacks the rest of the flat keys
             )
 
         except KeyError as e:
-            raise KeyError(f"❌ CONFIG ERROR: Missing required key or section in {path}: {e}")
+            raise KeyError(
+                f"❌ CONFIG ERROR: Missing required key or section in {path}: {e}"
+            )
         except TypeError as e:
             # This catches extra keys or wrong types
-            raise TypeError(f"❌ CONFIG ERROR: Invalid key or type mismatch in {path}. Detail: {e}")
+            raise TypeError(
+                f"❌ CONFIG ERROR: Invalid key or type mismatch in {path}. Detail: {e}"
+            )
