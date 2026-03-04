@@ -20,7 +20,7 @@ from .tracking_helper_func import (
     handle_continuation,
     handle_no_overlap,
     compute_max_consecutive,
-    attempt_advection_rescue
+    attempt_advection_rescue,
 )
 from .tracking_merging import handle_merging
 from .tracking_splitting import handle_splitting

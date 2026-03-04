@@ -23,7 +23,7 @@ from .input_output import (
     load_individual_detection_files,
     save_tracking_result,
 )
-from .grid_manager import build_grid_info, verify_and_build_grid_template
+from .grid_manager import verify_and_build_grid_template
 from .postprocessing import run_postprocessing_year
 
 # Set a global exception handler to log uncaught exceptions
@@ -396,7 +396,10 @@ def main():
 
             year_detection_dir = os.path.join(detection_output_path, str(year))
             detection_results, tracking_grid_info = load_individual_detection_files(
-                year_detection_dir, cfg.use_li_filter, cfg.lat_name, cfg.lon_name
+                year_detection_dir,
+                cfg.detection_parameters.use_lifted_index,
+                cfg.lat_name,
+                cfg.lon_name,
             )
 
             # Apply month filter if specified
@@ -441,8 +444,6 @@ def main():
                 cfg.tracking_parameters.nmaxmerge,
                 use_li_filter=cfg.detection_parameters.use_lifted_index,
             )
-            logger.info(f"Tracking for year {year} finished.")
-            print(f"Tracking for year {year} finished.")
 
             # Saving Phase
             logger.info(f"Saving individual hourly tracking files for year {year}...")

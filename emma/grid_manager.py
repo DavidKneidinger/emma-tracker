@@ -26,12 +26,12 @@ def get_attr_case_insensitive(obj, target_attr):
 
 def extract_cf_metadata(ds, lat_name, lon_name):
     """
-    Extracts grid mapping metadata.    
-    Instead of using pyproj to generate a modernized CF-1.8 dictionary (which 
-    can break older visualization tools like ncview), this function strictly 
-    preserves the original metadata structure of the input file to maintain 
-    provenance and compatibility. It only intervenes to correct missing essential 
-    CF fields and strip known bloated attributes (like crs_wkt) added by 
+    Extracts grid mapping metadata.
+    Instead of using pyproj to generate a modernized CF-1.8 dictionary (which
+    can break older visualization tools like ncview), this function strictly
+    preserves the original metadata structure of the input file to maintain
+    provenance and compatibility. It only intervenes to correct missing essential
+    CF fields and strip known bloated attributes (like crs_wkt) added by
     intermediate remapping tools.
 
     Parameters:
@@ -40,67 +40,84 @@ def extract_cf_metadata(ds, lat_name, lon_name):
     - lon_name: Name of the longitude/x-dimension variable.
 
     Returns:
-    - cf_dict: A dictionary of projection attributes, including a special 
+    - cf_dict: A dictionary of projection attributes, including a special
                '__var_name__' key to remember the original dummy variable's name.
     """
     # 1. Check for existing CF-compliant 'grid_mapping' variable
-    target_vars = list(ds.data_vars) + [lat_name, lon_name, 'latitude', 'longitude', 'lat', 'lon']
+    target_vars = list(ds.data_vars) + [
+        lat_name,
+        lon_name,
+        "latitude",
+        "longitude",
+        "lat",
+        "lon",
+    ]
     for v_name in target_vars:
-        if v_name not in ds: continue
-        mapping_var_name = get_attr_case_insensitive(ds[v_name], 'grid_mapping')
-        
+        if v_name not in ds:
+            continue
+        mapping_var_name = get_attr_case_insensitive(ds[v_name], "grid_mapping")
+
         if mapping_var_name and mapping_var_name in ds:
             cf_dict = ds[mapping_var_name].attrs.copy()
-            
+
             # --- THE "IN-BETWEEN" SMART PATCHING ---
             # 1. Ensure grid_mapping_name exists (Patch missing data)
-            if 'grid_mapping_name' not in cf_dict:
-                if 'grid_north_pole_latitude' in cf_dict:
-                    cf_dict['grid_mapping_name'] = 'rotated_latitude_longitude'
+            if "grid_mapping_name" not in cf_dict:
+                if "grid_north_pole_latitude" in cf_dict:
+                    cf_dict["grid_mapping_name"] = "rotated_latitude_longitude"
                 else:
-                    cf_dict['grid_mapping_name'] = 'unknown'
-            
+                    cf_dict["grid_mapping_name"] = "unknown"
+
             # 2. Strip GDAL/pyproj/CDO bloat if it was accidentally inherited
             keys_to_remove = [
-                "crs_wkt", "semi_major_axis", "semi_minor_axis", "inverse_flattening",
-                "reference_ellipsoid_name", "longitude_of_prime_meridian",
-                "prime_meridian_name", "geographic_crs_name", "horizontal_datum_name"
+                "crs_wkt",
+                "semi_major_axis",
+                "semi_minor_axis",
+                "inverse_flattening",
+                "reference_ellipsoid_name",
+                "longitude_of_prime_meridian",
+                "prime_meridian_name",
+                "geographic_crs_name",
+                "horizontal_datum_name",
             ]
             for k in keys_to_remove:
                 cf_dict.pop(k, None)
-            
+
             # 3. Store the original variable name (e.g., "rotated_pole") so the saver can use it
             cf_dict["__var_name__"] = str(mapping_var_name)
-            
+
             return cf_dict
 
     # 2. Fallback: Search for GRIB-specific grid type tags and translate
     search_objs = [ds] + [ds[v] for v in ds.data_vars]
     for obj in search_objs:
-        grib_type = get_attr_case_insensitive(obj, 'GRIB_gridType')
+        grib_type = get_attr_case_insensitive(obj, "GRIB_gridType")
         if grib_type:
-            if grib_type.lower() == 'lambert':
-                lat_1 = get_attr_case_insensitive(obj, 'GRIB_Latin1InDegrees') or 50.0
-                lat_2 = get_attr_case_insensitive(obj, 'GRIB_Latin2InDegrees') or 50.0
-                lat_0 = get_attr_case_insensitive(obj, 'GRIB_LaDInDegrees') or 50.0
-                lon_0 = get_attr_case_insensitive(obj, 'GRIB_LoVInDegrees') or 8.0
-                
+            if grib_type.lower() == "lambert":
+                lat_1 = get_attr_case_insensitive(obj, "GRIB_Latin1InDegrees") or 50.0
+                lat_2 = get_attr_case_insensitive(obj, "GRIB_Latin2InDegrees") or 50.0
+                lat_0 = get_attr_case_insensitive(obj, "GRIB_LaDInDegrees") or 50.0
+                lon_0 = get_attr_case_insensitive(obj, "GRIB_LoVInDegrees") or 8.0
+
                 return {
                     "__var_name__": "lambert_conformal",
                     "grid_mapping_name": "lambert_conformal_conic",
                     "standard_parallel": [lat_1, lat_2],
                     "latitude_of_projection_origin": lat_0,
-                    "longitude_of_central_meridian": lon_0
+                    "longitude_of_central_meridian": lon_0,
                 }
             else:
                 logger.warning(f"Unhandled GRIB grid type: {grib_type}.")
-                return {'__var_name__': 'crs', 'grid_mapping_name': grib_type}
+                return {"__var_name__": "crs", "grid_mapping_name": grib_type}
 
     # 3. Last Resort Inference
     if "rlat" in lat_name.lower() or "rlon" in lon_name.lower():
-        return {'__var_name__': 'rotated_pole', 'grid_mapping_name': 'rotated_latitude_longitude'}
-        
-    return {'__var_name__': 'crs', 'grid_mapping_name': 'latitude_longitude'}
+        return {
+            "__var_name__": "rotated_pole",
+            "grid_mapping_name": "rotated_latitude_longitude",
+        }
+
+    return {"__var_name__": "crs", "grid_mapping_name": "latitude_longitude"}
 
 
 def compute_grid_area(lat2d, lon2d):
@@ -211,7 +228,7 @@ def verify_and_build_grid_template(
     logger.info("Performing STRICT initial grid validation and building template...")
 
     with xr.open_dataset(first_precip_file, engine="netcdf4") as ds_p:
-        
+
         # --- 1. STRICT DIMENSION CHECK ---
         # Ensure the user provided the actual 1D base dimensions (e.g., 'rlat', 'rlon')
         if y_dim_name not in ds_p.sizes or x_dim_name not in ds_p.sizes:
@@ -236,12 +253,12 @@ def verify_and_build_grid_template(
 
         # --- 2. SMART 2D COORDINATE SEARCH ---
         p_lat2d, p_lon2d = None, None
-        
+
         for lat_candidate in ["latitude", "lat"]:
             if lat_candidate in ds_p and ds_p[lat_candidate].ndim == 2:
                 p_lat2d = ds_p[lat_candidate].values
                 break
-                
+
         for lon_candidate in ["longitude", "lon"]:
             if lon_candidate in ds_p and ds_p[lon_candidate].ndim == 2:
                 p_lon2d = ds_p[lon_candidate].values
@@ -249,7 +266,9 @@ def verify_and_build_grid_template(
 
         # Fallback for regular rectilinear grids (e.g., IMERG)
         if p_lat2d is None or p_lon2d is None:
-            logger.info("No explicit 2D latitude/longitude arrays found. Generating from 1D axes via meshgrid.")
+            logger.info(
+                "No explicit 2D latitude/longitude arrays found. Generating from 1D axes via meshgrid."
+            )
             p_lon2d, p_lat2d = np.meshgrid(
                 ds_p[x_dim_name].values, ds_p[y_dim_name].values
             )
@@ -257,13 +276,13 @@ def verify_and_build_grid_template(
         # --- 3. LI FILE VALIDATION ---
         if first_li_file:
             with xr.open_dataset(first_li_file, engine="netcdf4") as ds_l:
-                
+
                 l_lat2d, l_lon2d = None, None
                 for lat_candidate in ["latitude", "lat"]:
                     if lat_candidate in ds_l and ds_l[lat_candidate].ndim == 2:
                         l_lat2d = ds_l[lat_candidate].values
                         break
-                        
+
                 for lon_candidate in ["longitude", "lon"]:
                     if lon_candidate in ds_l and ds_l[lon_candidate].ndim == 2:
                         l_lon2d = ds_l[lon_candidate].values
