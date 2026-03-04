@@ -449,7 +449,7 @@ def run_postprocessing_year(
 
     # Add track-number as column and put it first
     df_summary = df_summary.reset_index()
-    df_summary.insert(0, 'track_number', df_summary.pop('track_number'))
+    df_summary.insert(0, "track_number", df_summary.pop("track_number"))
 
     # Update GLOBAL Summary CSV
     csv_summary_path = os.path.join(tracking_output_dir, "mcs_track_summary.csv")
