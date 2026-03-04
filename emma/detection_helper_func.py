@@ -74,160 +74,44 @@ def detect_cores_connected(precipitation, core_thresh=10.0, min_cluster_size=3):
     return final_labels
 
 
-def morphological_expansion_with_merging(
-    core_labels, precip, expand_threshold=0.1, max_iterations=400
-):
+def expand_cores(core_labels, precip, expand_threshold=1.0):
     """
-    Performs iterative morphological expansion of labeled cores. In each iteration:
-      1) Dilate each label by one pixel (8-connected).
-      2) Collect newly added pixels (where precip >= expand_threshold).
-      3) Build collisions (pixels claimed by multiple labels).
-      4) Repeatedly merge collisions until no further merges occur.
-      5) Finally apply expansions to the core_labels.
-    Repeats until no more pixels are added or until max_iterations is reached.
+    Groups convective cores into contiguous precipitation systems using a global mask.
+
+    1) Creates a binary mask of all precipitation >= expand_threshold.
+    2) Labels all 8-connected regions in this mask.
+    3) Retains only those labeled regions that overlap with at least one heavy core.
 
     Args:
-        core_labels (np.ndarray): 2D integer array of core labels (>0) and background=0
-        precip (np.ndarray): 2D precipitation array (same shape as core_labels)
-        expand_threshold (float): Minimum precipitation required to add new pixels
-        max_iterations (int): Maximum expansion iterations
+        core_labels (np.ndarray): 2D integer array of heavy cores (labels > 0, background = 0).
+        precip (np.ndarray): 2D precipitation array.
+        expand_threshold (float): Minimum precipitation defining the system envelope.
 
     Returns:
-        np.ndarray: Updated label array after expansions and merges
-
-    Notes:
-        - Collisions are unified by default if precip >= expand_threshold at the collision pixel.
-        - The merges are done in sets (transitive merges).
-        - We re-check collisions repeatedly within each iteration to avoid partial merges
-          (which can cause 'checkerboard' leftovers).
+        np.ndarray: 2D integer array of the full storm systems.
+                    Background is 0. Systems are labeled with consecutive integers.
     """
     logger = logging.getLogger(__name__)
-    structure = generate_binary_structure(2, 1)  # 8-connected
-    iteration = 0
 
-    while iteration < max_iterations:
-        iteration += 1
-        changed_pixels_total = 0
+    # 1. Create the global moderate precipitation mask.
+    # Bitwise OR (|) ensures core pixels are explicitly included even if smoothed below threshold
+    strat_mask = (precip >= expand_threshold) | (core_labels > 0)
 
-        # 1) Gather expansions for each label
-        expansions = {lbl: set() for lbl in np.unique(core_labels) if lbl > 0}
+    # 2. Label all 8-connected areas instantly using skimage (consistent with core detection)
+    strat_labels = connected_label(strat_mask, connectivity=2)
 
-        # Morphologically dilate each label by 1 step
-        for lbl in expansions:
-            feature_mask = core_labels == lbl
-            dilated_mask = binary_dilation(feature_mask, structure=structure)
-            # Only accept new pixels where precip >= expand_threshold
-            new_pixels = dilated_mask & (~feature_mask) & (precip >= expand_threshold)
+    # 3. Find which stratiform labels overlap with our heavy cores
+    core_mask = core_labels > 0
+    valid_system_ids = np.unique(strat_labels[core_mask])
 
-            if np.any(new_pixels):
-                coords = zip(*new_pixels.nonzero())
-                for r, c in coords:
-                    expansions[lbl].add((r, c))
+    # Remove the background (0)
+    valid_system_ids = valid_system_ids[valid_system_ids > 0]
 
-            changed_pixels_total += np.count_nonzero(new_pixels)
+    if len(valid_system_ids) == 0:
+        logger.warning("No expanding systems found matching the core criteria.")
+        return np.zeros_like(core_labels)
 
-        if changed_pixels_total == 0:
-            if iteration > max_iterations:
-                logger.warning("Expansion stopped after max iteration: %d", iteration)
-            break
+    # 4. Filter the map to keep ONLY the valid systems
+    final_labels = np.where(np.isin(strat_labels, valid_system_ids), strat_labels, 0)
 
-        # 2) Merge collisions in a loop until stable
-        merges_happened = True
-        while merges_happened:
-            merges_happened = False
-
-            # 2a) Build a mapping from pixel -> list of labels claiming it
-            pixel_claims = defaultdict(list)
-            for lbl, pixset in expansions.items():
-                for r, c in pixset:
-                    # The expanding label claims it
-                    pixel_claims[(r, c)].append(lbl)
-                    
-                    # THE FIX: Check if another label already owns this pixel
-                    existing_lbl = core_labels[r, c]
-                    if existing_lbl > 0 and existing_lbl != lbl:
-                        if existing_lbl not in pixel_claims[(r, c)]:
-                            pixel_claims[(r, c)].append(existing_lbl)
-
-            # 2b) Detect collisions
-            merges = []
-            for (r, c), claim_list in pixel_claims.items():
-                if len(claim_list) > 1 and precip[r, c] >= expand_threshold:
-                    merges.append(set(claim_list))
-
-            if not merges:
-                break  # no collisions => done merging
-
-            merges_to_apply = unify_merge_sets(merges)
-
-            # 2c) Apply merges => pick smallest label as master
-            for mg in merges_to_apply:
-                if len(mg) < 2:
-                    continue  # single label
-                master = min(mg)
-                old_labels = [x for x in mg if x != master]
-
-                # Reassign expansions
-                for old_lbl in old_labels:
-                    if old_lbl in expansions:
-                        expansions[master].update(expansions[old_lbl])
-                        del expansions[old_lbl]
-                        merges_happened = True
-
-                # Also rewrite label array so we don't keep partial expansions
-                # (this ensures collisions are recognized properly if they happen again)
-                for old_lbl in old_labels:
-                    core_labels[core_labels == old_lbl] = master
-
-        # 3) Finally, apply expansions to core_labels
-        #    Now that merges are stable for this iteration
-        for lbl, pixset in expansions.items():
-            for r, c in pixset:
-                core_labels[r, c] = lbl
-
-    return core_labels
-
-
-def unify_merge_sets(merges):
-    """
-     Merges overlapping sets of labels transitively.
-     For example, if merges = [ {1,2}, {2,3}, {4,5}, {1,3} ],
-     the end result is [ {1,2,3}, {4,5} ].
-
-    Args:
-        merges (list of set): Each set contains labels that must unify.
-
-     Returns:
-         list of set: The final merged sets after transitive unification.
-
-      Args:
-          merges (list): list of sets, e.g. [ {1,2}, {2,3}, ... ]
-    """
-    merged = []
-    for mset in merges:
-        # compare with existing sets in 'merged'
-        found = False
-        for i, existing in enumerate(merged):
-            if mset & existing:
-                merged[i] = existing.union(mset)
-                found = True
-                break
-        if not found:
-            merged.append(mset)
-    # repeat until stable
-    stable = False
-    while not stable:
-        stable = True
-        new_merged = []
-        for s in merged:
-            merged_any = False
-            for i, x in enumerate(new_merged):
-                if s & x:
-                    new_merged[i] = x.union(s)
-                    merged_any = True
-                    stable = False
-                    break
-            if not merged_any:
-                new_merged.append(s)
-        merged = new_merged
-    return merged
+    return final_labels

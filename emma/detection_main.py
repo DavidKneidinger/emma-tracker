@@ -4,8 +4,7 @@ from .input_output import load_precipitation_data, load_lifted_index_data
 from .detection_helper_func import (
     smooth_precipitation_field,
     detect_cores_connected,
-    morphological_expansion_with_merging,
-    unify_checkerboard_simple,
+    expand_cores,
 )
 from .detection_filter_func import (
     filter_mcs_candidates,
@@ -79,12 +78,11 @@ def detect_mcs_in_file(
         min_cluster_size=4,  # Min number of points in a cluster
     )
 
-    # Step 3: Morphological expansion with merging
-    expanded_labels = morphological_expansion_with_merging(
+    # Step 3: Group cores into continuous systems via masking
+    expanded_labels = expand_cores_by_masking(
         core_labels,
         precipitation_smooth,
         expand_threshold=moderate_precip_threshold,
-        max_iterations=400,
     )
 
     # Step 4: Filter MCS candidates based on number of convective plumes, size and lifted index
