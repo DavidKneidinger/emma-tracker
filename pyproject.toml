@@ -26,7 +26,8 @@ dependencies = [
   "dask",          
   "bottleneck",     
   "tqdm",
-  "pytest"       
+  "pytest",
+  "pyproj",    
 ]
 
 [project.scripts]
