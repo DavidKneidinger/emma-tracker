@@ -146,8 +146,8 @@ number_of_cores: 20
  https://zenodo.org/records/18234276 
 
  
- ## Improvments and suggestions
- If you encounter any errors or have suggestions for improvement, simply contact me or open um an issue directly in github.
+ ## Improvements and suggestions
+ If you encounter any errors or have suggestions for improvement, simply contact me or open an issue directly in github.
 
  ## License
  
