@@ -9,16 +9,15 @@ import yaml
 import sys
 import logging
 import pandas as pd
+from collections import defaultdict
 
 from .config import EmmaConfig
 from .detection_main import detect_mcs_in_file
 from .tracking_main import track_mcs
 from .input_output import (
     setup_logging,
-    align_files_by_hour,
     handle_exception,
-    filter_files_by_date,
-    group_files_by_year,
+    build_task_list,
     save_detection_result,
     load_individual_detection_files,
     save_tracking_result,
@@ -44,6 +43,8 @@ def process_file(
     min_nr_plumes,
     lifted_index_percentage,
     grid_info,
+    precip_time_index,
+    li_time_index,
 ):
     """
     Wrapper function to run MCS detection for a single file.
@@ -63,6 +64,8 @@ def process_file(
         min_nr_plumes,
         lifted_index_percentage,
         grid_info,
+        precip_time_index=precip_time_index,
+        li_time_index=li_time_index,
     )
     return result
 
@@ -145,11 +148,10 @@ def main():
         log_modes["postprocessing"] = "a"
 
     # --- 2. FIND, FILTER, AND GROUP INPUT FILES ---
-    files_by_year = {}
-    li_files_by_year = {}
+    tasks_by_year = defaultdict(list)
 
     if cfg.detection:
-        # Find all files recursively
+        # Find all precipitation files
         all_precip_files = sorted(
             glob.glob(
                 os.path.join(precip_data_dir, "**", f"*{file_suffix}"), recursive=True
@@ -157,54 +159,49 @@ def main():
         )
         if not all_precip_files:
             raise FileNotFoundError("Precipitation data directory is empty. Exiting.")
-        logger.info(
-            f"Found {len(all_precip_files)} total precipitation files in source directory."
-        )
+        logger.info(f"Found {len(all_precip_files)} total precipitation files.")
 
-        # Apply the date filter
-        filtered_precip_files = filter_files_by_date(
-            all_precip_files, years_to_process, months_to_process
-        )
-        logger.info(
-            f"After filtering by year/month, {len(filtered_precip_files)} files remain for processing."
-        )
-
-        # Now, group the filtered list by year
-        files_by_year = group_files_by_year(filtered_precip_files)
-
+        # Find all lifted index files (if used)
+        all_li_files = []
         if cfg.detection_parameters.use_lifted_index:
-            lifted_index_data_dir = cfg.lifted_index_data_directory
-            lifted_index_data_var = cfg.lifted_index_var_name
-
             all_li_files = sorted(
                 glob.glob(
-                    os.path.join(lifted_index_data_dir, "**", f"*{file_suffix}"),
+                    os.path.join(
+                        cfg.lifted_index_data_directory, "**", f"*{file_suffix}"
+                    ),
                     recursive=True,
                 )
             )
             if not all_li_files:
                 raise FileNotFoundError(
-                    "lifted index data directory is empty. Exiting."
+                    "Lifted index data directory is empty. Exiting."
                 )
-            logger.info(
-                f"Found {len(all_li_files)} total lifted index files in source directory."
-            )
-
-            # Apply the same filter to the lifted index files
-            filtered_li_files = filter_files_by_date(
-                all_li_files, years_to_process, months_to_process
-            )
-            logger.info(
-                f"After filtering, {len(filtered_li_files)} lifted index files remain."
-            )
-
-            li_files_by_year = group_files_by_year(filtered_li_files)
+            logger.info(f"Found {len(all_li_files)} total lifted index files.")
         else:
             lifted_index_data_var = False
 
+        # Build the exact task list using lazy metadata loading
+        logger.info("Building task list from file metadata...")
+        all_tasks = build_task_list(
+            precip_files=all_precip_files,
+            li_files=all_li_files
+            if cfg.detection_parameters.use_lifted_index
+            else None,
+            years=years_to_process,
+            months=months_to_process,
+        )
+
+        if not all_tasks:
+            logger.warning("No valid time steps found matching the criteria. Exiting.")
+            sys.exit(0)
+
+        # Group tasks by year to maintain the yearly batch processing architecture
+        for task in all_tasks:
+            tasks_by_year[task["aligned_time"].year].append(task)
+
     # Determine the years to iterate over
     if cfg.detection:
-        years_to_iterate = sorted(files_by_year.keys())
+        years_to_iterate = sorted(tasks_by_year.keys())
     else:
         # If detection is skipped, determine years from config or existing output directories
         if years_to_process:
@@ -247,14 +244,6 @@ def main():
     for year in years_to_iterate:
         logger.info(f"--- Starting processing for year: {year} ---")
 
-        # Retrieve files for the current year (empty if detection is skipped)
-        precip_file_list_year = files_by_year.get(year, [])
-
-        if cfg.detection_parameters.use_lifted_index:
-            li_files_year = li_files_by_year.get(year, [])
-        else:
-            li_files_year = []
-
         # --- 3a. DETECTION PHASE ---
         if cfg.detection:
             # Configure logging for detection
@@ -265,57 +254,24 @@ def main():
             )
             log_modes["detection"] = "a"
 
-            matched_precip_files = []
-            matched_li_files = []
+            tasks_for_year = tasks_by_year.get(year, [])
 
-            # Perform Alignment
-            if cfg.detection_parameters.use_lifted_index:
-                logger.info("Aligning Precipitation and Lifted Index files...")
-                file_pairs, miss_li, miss_precip = align_files_by_hour(
-                    precip_file_list_year, li_files_year
-                )
+            if not tasks_for_year:
+                logger.warning(f"No detection tasks found for year {year}. Skipping.")
+                continue
 
-                if miss_li:
-                    logger.warning(
-                        f"Year {year}: {len(miss_li)} Precip files have no matching LI file. Skipped."
-                    )
-                if miss_precip:
-                    logger.info(
-                        f"Year {year}: {len(miss_precip)} LI files unused (no Precip)."
-                    )
-
-                if not file_pairs:
-                    logger.warning(
-                        f"No valid file pairs found for year {year}. Skipping detection."
-                    )
-                    continue
-
-                # Unpack pairs
-                matched_precip_files = [p[0] for p in file_pairs]
-                matched_li_files = [p[1] for p in file_pairs]
-
-            else:
-                # No alignment needed
-                matched_precip_files = precip_file_list_year
-                matched_li_files = [None] * len(precip_file_list_year)
-
-            if global_grid_template is None and matched_precip_files:
-                first_p = matched_precip_files[0]
-                first_l = (
-                    matched_li_files[0]
-                    if cfg.detection_parameters.use_lifted_index
-                    else None
-                )
-
+            # Build the global grid template using the very first task's files
+            if global_grid_template is None:
+                first_task = tasks_for_year[0]
                 global_grid_template = verify_and_build_grid_template(
-                    first_precip_file=first_p,
-                    first_li_file=first_l,
+                    first_precip_file=first_task["precip_file"],
+                    first_li_file=first_task.get("li_file"),
                     y_dim_name=lat_name,
                     x_dim_name=lon_name,
                 )
 
             logger.info(
-                f"Running detection for {len(precip_file_list_year)} files in {year}..."
+                f"Running detection for {len(tasks_for_year)} timesteps in {year}..."
             )
 
             if cfg.use_multiprocessing:
@@ -325,13 +281,12 @@ def main():
                     futures = [
                         executor.submit(
                             process_file,
-                            precip_file,
+                            task["precip_file"],
                             precip_data_var,
-                            li_file,
+                            task.get("li_file"),
                             lifted_index_data_var,
                             lat_name,
                             lon_name,
-                            # Pass strict values from nested config
                             cfg.detection_parameters.heavy_precip_threshold,
                             cfg.detection_parameters.lifted_index_threshold,
                             cfg.detection_parameters.moderate_precip_threshold,
@@ -339,10 +294,10 @@ def main():
                             cfg.detection_parameters.min_nr_plumes,
                             cfg.detection_parameters.lifted_index_percentage_threshold,
                             global_grid_template,
+                            task["precip_idx"],
+                            task.get("li_idx"),
                         )
-                        for precip_file, li_file in zip(
-                            matched_precip_files, matched_li_files
-                        )
+                        for task in tasks_for_year
                     ]
                     for future in concurrent.futures.as_completed(futures):
                         try:
@@ -356,15 +311,14 @@ def main():
                         except Exception as e:
                             logger.error(f"A detection task failed: {e}")
             else:
-                for precip_file, li_file in zip(matched_precip_files, matched_li_files):
+                for task in tasks_for_year:
                     detection_result = detect_mcs_in_file(
-                        precip_file,
+                        task["precip_file"],
                         precip_data_var,
-                        li_file,
+                        task.get("li_file"),
                         lifted_index_data_var,
                         lat_name,
                         lon_name,
-                        # Pass strict values from nested config
                         cfg.detection_parameters.heavy_precip_threshold,
                         cfg.detection_parameters.lifted_index_threshold,
                         cfg.detection_parameters.moderate_precip_threshold,
@@ -372,6 +326,8 @@ def main():
                         cfg.detection_parameters.min_nr_plumes,
                         cfg.detection_parameters.lifted_index_percentage_threshold,
                         global_grid_template,
+                        precip_time_index=task["precip_idx"],
+                        li_time_index=task.get("li_idx"),
                     )
                     save_detection_result(
                         detection_result,
