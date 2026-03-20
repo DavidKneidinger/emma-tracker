@@ -14,111 +14,90 @@ from emma.grid_manager import build_grid_info
 logger = logging.getLogger(__name__)
 
 
-def align_files_by_hour(precip_files, li_files):
+def build_task_list(precip_files, li_files=None, years=None, months=None):
     """
-    Pairs Precipitation and Lifted Index files based on internal time coordinates.
-    Ignores minutes so that T12:30 matches T12:00.
+    Lazily scans NetCDF files to extract valid time steps matching the
+    requested years and months. Builds a list of chunk-agnostic tasks for the workers.
 
-    If internal time reading fails, falls back to assumption based on file counts.
+    Args:
+        precip_files (list): Paths to precipitation files.
+        li_files (list): Paths to lifted index files (can be empty/None).
+        years (list): Years to process (empty means all).
+        months (list): Months to process (empty means all).
 
     Returns:
-        valid_pairs (list): List of tuples (precip_path, li_path)
-        missing_li (list): List of timestamp keys missing LI
-        missing_precip (list): List of timestamp keys missing Precip
+        list of dicts: Sorted list of tasks.
+        Example: [{'time': pd.Timestamp, 'precip_file': str, 'precip_idx': int, 'li_file': str, 'li_idx': int}]
     """
     logger = logging.getLogger(__name__)
+    tasks_dict = {}  # key: pd.Timestamp, value: dict of file and index info
 
-    def get_time_key_from_file(filepath):
-        """
-        Opens the file and extracts the first time value.
-        Returns formatted YYYYMMDDHH string or None if failed.
-        """
-        try:
-            # decode_times=True is default, but explicit is safer
-            with xr.open_dataset(filepath, engine="netcdf4") as ds:
-                if "time" in ds and ds["time"].size > 0:
-                    t = ds["time"].values[0]
-                    # Convert to YYYYMMDDHH string
-                    ts = pd.to_datetime(t)
-                    return ts.strftime("%Y%m%d%H")
-        except Exception:
-            return None
-        return None
+    # Helper to lazily scan a list of files
+    def scan_files(file_list, file_type):
+        for filepath in file_list:
+            try:
+                # Lazy load: only reads metadata, not the heavy data arrays
+                with xr.open_dataset(filepath, engine="netcdf4") as ds:
+                    if "time" not in ds:
+                        logger.warning(f"No 'time' dimension in {filepath}. Skipping.")
+                        continue
 
-    # --- Strategy 1: Match by Internal Time ---
-    precip_map = {}
-    li_map = {}
-    failed_read = False
+                    times = pd.to_datetime(ds["time"].values)
 
-    # 1. Read Precipitation Files
-    for f in precip_files:
-        t_key = get_time_key_from_file(f)
-        if t_key:
-            precip_map[t_key] = f
+                    for idx, t in enumerate(times):
+                        # Filter by year and month based on config
+                        if years and t.year not in years:
+                            continue
+                        if months and t.month not in months:
+                            continue
+
+                        # Initialize timestamp entry if it doesn't exist
+                        if t not in tasks_dict:
+                            tasks_dict[t] = {"time": t}
+
+                        # Store the exact file and the index of the slice
+                        tasks_dict[t][f"{file_type}_file"] = filepath
+                        tasks_dict[t][f"{file_type}_idx"] = idx
+            except Exception as e:
+                logger.error(f"Failed to scan {filepath} for metadata: {e}")
+
+    logger.info("Scanning Precipitation files for temporal mapping...")
+    scan_files(precip_files, "precip")
+
+    if li_files:
+        logger.info("Scanning Lifted Index files for temporal mapping...")
+        scan_files(li_files, "li")
+
+    # Filter for complete pairs and sort chronologically
+    valid_tasks = []
+    missing_li = 0
+    missing_precip = 0
+
+    for t in sorted(tasks_dict.keys()):
+        task = tasks_dict[t]
+        has_precip = "precip_file" in task
+        has_li = "li_file" in task
+
+        if li_files:
+            if has_precip and has_li:
+                valid_tasks.append(task)
+            elif has_precip:
+                missing_li += 1
+            elif has_li:
+                missing_precip += 1
         else:
-            failed_read = True
-            break  # Stop reading if one fails, try fallback
+            if has_precip:
+                task["li_file"] = None
+                task["li_idx"] = None
+                valid_tasks.append(task)
 
-    # 2. Read Lifted Index Files (only if precip succeeded)
-    if not failed_read:
-        for f in li_files:
-            t_key = get_time_key_from_file(f)
-            if t_key:
-                li_map[t_key] = f
-            else:
-                failed_read = True
-                break
+    if missing_li > 0:
+        logger.warning(f"Found {missing_li} timesteps with Precip but missing LI.")
+    if missing_precip > 0:
+        logger.info(f"Found {missing_precip} timesteps with LI but missing Precip.")
 
-    # 3. Align or Fallback
-    if not failed_read:
-        valid_pairs = []
-        missing_li = []
-        missing_precip = []
-
-        all_keys = sorted(set(precip_map.keys()) | set(li_map.keys()))
-
-        for key in all_keys:
-            p_file = precip_map.get(key)
-            l_file = li_map.get(key)
-
-            if p_file and l_file:
-                valid_pairs.append((p_file, l_file))
-            elif p_file and not l_file:
-                missing_li.append(key)
-            elif l_file and not p_file:
-                missing_precip.append(key)
-
-        return valid_pairs, missing_li, missing_precip
-
-    # --- Strategy 2: Fallback (Count Match) ---
-    logger.info(
-        "Internal time extraction failed (missing 'time' var or corrupt file). Attempting fallback..."
-    )
-
-    if len(precip_files) == len(li_files):
-        msg = (
-            f"Fallback Triggered: Both directories have {len(precip_files)} files. "
-            "Assuming files are sorted and matched 1-to-1."
-        )
-        print(msg)
-        logger.warning(msg)
-
-        # Sort strictly by filename to ensure alignment
-        p_sorted = sorted(precip_files)
-        l_sorted = sorted(li_files)
-
-        # Zip them together
-        valid_pairs = list(zip(p_sorted, l_sorted))
-
-        # In fallback mode, we assume no missing files
-        return valid_pairs, [], []
-
-    else:
-        logger.error(
-            f"Alignment Failed: Internal time missing AND file counts mismatch "
-            f"(Precip: {len(precip_files)}, LI: {len(li_files)}). Cannot pair files."
-        )
-        return [], [], []
+    logger.info(f"Total valid timesteps identified for processing: {len(valid_tasks)}")
+    return valid_tasks
 
 
 def get_dataset_encoding(ds):
@@ -259,79 +238,6 @@ def setup_logging(output_dir, filename="mcs_tracking.log", mode="a"):
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
-
-
-def group_files_by_year(file_list):
-    """
-    Groups a list of file paths into a dictionary keyed by year.
-
-    This function uses a regular expression to find a date in YYYYMMDD format
-    within the filename, making it robust to different naming conventions.
-    """
-    files_by_year = defaultdict(list)
-    # This regex looks for a sequence of 8 digits (YYYYMMDD)
-    date_pattern = re.compile(r"(\d{8})")
-
-    for f in file_list:
-        basename = os.path.basename(f)
-        match = date_pattern.search(basename)
-
-        if match:
-            date_str = match.group(1)
-
-            # Convert the extracted 8-digit string to a datetime object
-            year = pd.to_datetime(date_str, format="%Y%m%d").year
-            files_by_year[year].append(f)
-
-        else:
-            logging.warning(
-                f"Could not parse YYYYMMDD date from filename: {basename}. Skipping."
-            )
-
-    return files_by_year
-
-
-def filter_files_by_date(file_list, years=None, months=None):
-    """
-    Filters a list of file paths based on specified years and/or months.
-
-    The function extracts a YYYYMMDD date from each filename to perform the
-    filtering. If `years` or `months` are empty or None, no filtering is
-    applied for that criterion.
-
-    Args:
-        file_list (list): The initial list of file paths.
-        years (list, optional): A list of integer years to include.
-        months (list, optional): A list of integer months to include.
-
-    Returns:
-        list: A new list containing only the filtered file paths.
-    """
-    # If both filter lists are empty/None, no filtering is needed.
-    if not years and not months:
-        return file_list
-
-    filtered_list = []
-    date_pattern = re.compile(r"(\d{8})")
-    logger = logging.getLogger(__name__)
-
-    for f in file_list:
-        basename = os.path.basename(f)
-        match = date_pattern.search(basename)
-
-        if match:
-            date_str = match.group(1)
-            timestamp = pd.to_datetime(date_str, format="%Y%m%d")
-
-            # A file is kept if its year/month is in the respective list,
-            # or if that list is empty (which means "accept all").
-            year_ok = not years or timestamp.year in years
-            month_ok = not months or timestamp.month in months
-
-            if year_ok and month_ok:
-                filtered_list.append(f)
-
-    return filtered_list
 
 
 def convert_precip_units(prec, target_unit="mm/h"):
