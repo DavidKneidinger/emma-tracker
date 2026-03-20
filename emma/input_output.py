@@ -36,31 +36,37 @@ def build_task_list(precip_files, li_files=None, years=None, months=None):
     def scan_files(file_list, file_type):
         for filepath in file_list:
             try:
-                # Lazy load: only reads metadata, not the heavy data arrays
+                # Lazy load: only reads metadata
                 with xr.open_dataset(filepath, engine="netcdf4") as ds:
                     if "time" not in ds:
                         logger.warning(f"No 'time' dimension in {filepath}. Skipping.")
                         continue
-
+                        
                     times = pd.to_datetime(ds["time"].values)
-
+                    
                     for idx, t in enumerate(times):
-                        # Filter by year and month based on config
-                        if years and t.year not in years:
-                            continue
-                        if months and t.month not in months:
-                            continue
-
-                        # Initialize timestamp entry if it doesn't exist
-                        if t not in tasks_dict:
-                            tasks_dict[t] = {"time": t}
-
-                        # Store the exact file and the index of the slice
-                        tasks_dict[t][f"{file_type}_file"] = filepath
-                        tasks_dict[t][f"{file_type}_idx"] = idx
+                        # 1. Align the time by dropping minutes/seconds
+                        # 12:30:00 -> 12:00:00, 12:00:00 -> 12:00:00
+                        aligned_t = t.floor('h') 
+                        
+                        # 2. Filter by year and month based on config
+                        if years and aligned_t.year not in years: continue
+                        if months and aligned_t.month not in months: continue
+                        
+                        # 3. Store under the aligned hourly key
+                        if aligned_t not in tasks_dict:
+                            # Keep track of the aligned time for tracking output later
+                            tasks_dict[aligned_t] = {"aligned_time": aligned_t}
+                            
+                        tasks_dict[aligned_t][f"{file_type}_file"] = filepath
+                        tasks_dict[aligned_t][f"{file_type}_idx"] = idx
+                        
+                        # Optional: store the exact original timestamp if needed downstream
+                        tasks_dict[aligned_t][f"{file_type}_raw_time"] = t 
+                        
             except Exception as e:
                 logger.error(f"Failed to scan {filepath} for metadata: {e}")
-
+                
     logger.info("Scanning Precipitation files for temporal mapping...")
     scan_files(precip_files, "precip")
 
