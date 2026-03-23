@@ -27,7 +27,8 @@ def detect_mcs_in_file(
     min_nr_plumes,
     lifted_index_percentage,
     grid_info,
-    time_index=0,
+    precip_time_index=0,
+    li_time_index=0,
 ):
     """
     Detect MCSs in a single file.
@@ -54,7 +55,7 @@ def detect_mcs_in_file(
 
     # Load data
     ds, _, _, _, _, precipitation = load_precipitation_data(
-        precip_file_path, precip_data_var, lat_name, lon_name, time_index
+        precip_file_path, precip_data_var, lat_name, lon_name, precip_time_index
     )
 
     lat2d = grid_info["lat2d"]
@@ -79,7 +80,7 @@ def detect_mcs_in_file(
     )
 
     # Step 3: Group cores into continuous systems via masking
-    expanded_labels = expand_cores_by_masking(
+    expanded_labels = expand_cores(
         core_labels,
         precipitation_smooth,
         expand_threshold=moderate_precip_threshold,
@@ -105,7 +106,7 @@ def detect_mcs_in_file(
             lifted_index_data_var,
             lat_name,
             lon_name,
-            time_index,
+            li_time_index,
         )
         # Apply the filter
         lifted_index_regions = lifted_index_filter(
