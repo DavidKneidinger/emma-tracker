@@ -9,6 +9,7 @@ import re
 import sys
 import logging
 from collections import defaultdict
+import concurrent.futures
 from emma.grid_manager import build_grid_info
 
 logger = logging.getLogger(__name__)
@@ -30,51 +31,66 @@ def build_task_list(precip_files, li_files=None, years=None, months=None):
         Example: [{'time': pd.Timestamp, 'precip_file': str, 'precip_idx': int, 'li_file': str, 'li_idx': int}]
     """
     logger = logging.getLogger(__name__)
-    tasks_dict = {}  # key: pd.Timestamp, value: dict of file and index info
+    tasks_dict = {}
 
-    # Helper to lazily scan a list of files
-    def scan_files(file_list, file_type):
-        for filepath in file_list:
-            try:
-                # Lazy load: only reads metadata
-                with xr.open_dataset(filepath, engine="netcdf4") as ds:
-                    if "time" not in ds:
-                        logger.warning(f"No 'time' dimension in {filepath}. Skipping.")
+    # 1. Helper function for a single thread to execute
+    def _scan_single_file(filepath, file_type):
+        file_tasks = []
+        try:
+            with xr.open_dataset(filepath, engine="netcdf4") as ds:
+                if "time" not in ds:
+                    logger.warning(f"No 'time' dimension in {filepath}. Skipping.")
+                    return file_type, filepath, []
+
+                times = pd.to_datetime(ds["time"].values)
+
+                for idx, t in enumerate(times):
+                    aligned_t = t.floor("h")
+                    if years and aligned_t.year not in years:
                         continue
-                        
-                    times = pd.to_datetime(ds["time"].values)
-                    
-                    for idx, t in enumerate(times):
-                        # 1. Align the time by dropping minutes/seconds
-                        # 12:30:00 -> 12:00:00, 12:00:00 -> 12:00:00
-                        aligned_t = t.floor('h') 
-                        
-                        # 2. Filter by year and month based on config
-                        if years and aligned_t.year not in years: continue
-                        if months and aligned_t.month not in months: continue
-                        
-                        # 3. Store under the aligned hourly key
-                        if aligned_t not in tasks_dict:
-                            # Keep track of the aligned time for tracking output later
-                            tasks_dict[aligned_t] = {"aligned_time": aligned_t}
-                            
-                        tasks_dict[aligned_t][f"{file_type}_file"] = filepath
-                        tasks_dict[aligned_t][f"{file_type}_idx"] = idx
-                        
-                        # Optional: store the exact original timestamp if needed downstream
-                        tasks_dict[aligned_t][f"{file_type}_raw_time"] = t 
-                        
-            except Exception as e:
-                logger.error(f"Failed to scan {filepath} for metadata: {e}")
-                
-    logger.info("Scanning Precipitation files for temporal mapping...")
-    scan_files(precip_files, "precip")
+                    if months and aligned_t.month not in months:
+                        continue
+
+                    # Store the extracted metadata to be merged safely later
+                    file_tasks.append((aligned_t, idx, t))
+
+        except Exception as e:
+            logger.error(f"Failed to scan {filepath} for metadata: {e}")
+
+        return file_type, filepath, file_tasks
+
+    # 2. Concurrency manager
+    def scan_files_parallel(file_list, file_type):
+        # max_workers=16 prevents I/O overload/disk thrashing and avoids OS open-file limits
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [
+                executor.submit(_scan_single_file, f, file_type) for f in file_list
+            ]
+
+            # as_completed yields results as soon as a thread finishes
+            for future in concurrent.futures.as_completed(futures):
+                ftype, fpath, extracted_tasks = future.result()
+
+                # Update the shared dictionary safely in the MAIN thread
+                for aligned_t, idx, raw_t in extracted_tasks:
+                    if aligned_t not in tasks_dict:
+                        tasks_dict[aligned_t] = {"aligned_time": aligned_t}
+
+                    tasks_dict[aligned_t][f"{ftype}_file"] = fpath
+                    tasks_dict[aligned_t][f"{ftype}_idx"] = idx
+                    tasks_dict[aligned_t][f"{ftype}_raw_time"] = raw_t
+
+    # 3. Execute the concurrent scans
+    logger.info("Scanning Precipitation files for temporal mapping (Multi-threaded)...")
+    scan_files_parallel(precip_files, "precip")
 
     if li_files:
-        logger.info("Scanning Lifted Index files for temporal mapping...")
-        scan_files(li_files, "li")
+        logger.info(
+            "Scanning Lifted Index files for temporal mapping (Multi-threaded)..."
+        )
+        scan_files_parallel(li_files, "li")
 
-    # Filter for complete pairs and sort chronologically
+    # 4. Filter and build the final task list
     valid_tasks = []
     missing_li = 0
     missing_precip = 0
