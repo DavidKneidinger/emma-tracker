@@ -107,14 +107,19 @@ def main():
 
     # General parameters (Access via cfg object)
     precip_data_dir = cfg.precip_data_directory
-    file_suffix = cfg.file_suffix
     detection_output_path = cfg.detection_output_path
     raw_tracking_output_dir = cfg.raw_tracking_output_dir
     tracking_output_dir = cfg.filtered_tracking_output_dir
+    precip_template = cfg.precip_filename_template
     precip_data_var = cfg.precip_var_name
     lat_name = cfg.lat_name
     lon_name = cfg.lon_name
     data_source = cfg.data_source
+
+    if cfg.detection_parameters.use_lifted_index:
+        lifted_index_data_var = cfg.lifted_index_var_name
+    else:
+        lifted_index_data_var = False
 
     # Read optional date filtering parameters ---
     years_to_process = cfg.years
@@ -151,42 +156,24 @@ def main():
     tasks_by_year = defaultdict(list)
 
     if cfg.detection:
-        # Find all precipitation files
-        all_precip_files = sorted(
-            glob.glob(
-                os.path.join(precip_data_dir, "**", f"*{file_suffix}"), recursive=True
-            )
-        )
-        if not all_precip_files:
-            raise FileNotFoundError("Precipitation data directory is empty. Exiting.")
-        logger.info(f"Found {len(all_precip_files)} total precipitation files.")
+        logger.info("Building task list from directories and templates...")
 
-        # Find all lifted index files (if used)
-        all_li_files = []
-        if cfg.detection_parameters.use_lifted_index:
-            all_li_files = sorted(
-                glob.glob(
-                    os.path.join(
-                        cfg.lifted_index_data_directory, "**", f"*{file_suffix}"
-                    ),
-                    recursive=True,
-                )
-            )
-            if not all_li_files:
-                raise FileNotFoundError(
-                    "Lifted index data directory is empty. Exiting."
-                )
-            logger.info(f"Found {len(all_li_files)} total lifted index files.")
-        else:
-            lifted_index_data_var = False
-
-        # Build the exact task list using lazy metadata loading
-        logger.info("Building task list from file metadata...")
-        all_tasks = build_task_list(
-            precip_files=all_precip_files,
-            li_files=all_li_files
+        li_dir = (
+            cfg.lifted_index_data_directory
             if cfg.detection_parameters.use_lifted_index
-            else None,
+            else None
+        )
+        li_template = (
+            cfg.lifted_index_filename_template
+            if cfg.detection_parameters.use_lifted_index
+            else None
+        )
+
+        all_tasks = build_task_list(
+            precip_dir=precip_data_dir,
+            precip_template=precip_template,
+            li_dir=li_dir,
+            li_template=li_template,
             years=years_to_process,
             months=months_to_process,
         )
@@ -195,7 +182,6 @@ def main():
             logger.warning("No valid time steps found matching the criteria. Exiting.")
             sys.exit(0)
 
-        # Group tasks by year to maintain the yearly batch processing architecture
         for task in all_tasks:
             tasks_by_year[task["aligned_time"].year].append(task)
 

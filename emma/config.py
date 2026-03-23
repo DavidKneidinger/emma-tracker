@@ -39,7 +39,6 @@ class EmmaConfig:
     # 1. Paths
     precip_data_directory: str
     lifted_index_data_directory: str
-    file_suffix: str
     detection_output_path: str
     raw_tracking_output_dir: str
     filtered_tracking_output_dir: str
@@ -47,6 +46,8 @@ class EmmaConfig:
     # 2. Variable Names
     precip_var_name: str
     lifted_index_var_name: str
+    precip_filename_template: str
+    lifted_index_filename_template: str
     lat_name: str
     lon_name: str
     data_source: str

@@ -8,89 +8,140 @@ import json
 import re
 import sys
 import logging
-from collections import defaultdict
-import concurrent.futures
 from emma.grid_manager import build_grid_info
 
 logger = logging.getLogger(__name__)
 
 
-def build_task_list(precip_files, li_files=None, years=None, months=None):
+def build_task_list(
+    precip_dir, precip_template, li_dir=None, li_template=None, years=None, months=None
+):
     """
-    Lazily scans NetCDF files to extract valid time steps matching the
-    requested years and months. Builds a list of chunk-agnostic tasks for the workers.
+    Scans data directories using filename templates to build a list of processing tasks.
+
+    This function utilizes a "Smart Pre-Filter" string-parsing algorithm to instantly
+    drop files that do not fall within the requested years, drastically reducing disk I/O.
+    It then lazily loads the surviving NetCDF files using xarray to extract the exact
+    chunk-agnostic integer indices (time slices) for the multiprocessing workers.
 
     Args:
-        precip_files (list): Paths to precipitation files.
-        li_files (list): Paths to lifted index files (can be empty/None).
-        years (list): Years to process (empty means all).
-        months (list): Months to process (empty means all).
+        precip_dir (str): Base directory containing precipitation NetCDF files.
+        precip_template (str): Filename naming convention for precipitation files
+            (e.g., "cerra_tp_YYYYMMDDTHHMM.nc" or "TOT_PREC_YYYY-YYYY.nc").
+        li_dir (str, optional): Base directory containing lifted index files. Defaults to None.
+        li_template (str, optional): Filename naming convention for LI files. Defaults to None.
+        years (list of int, optional): Specific years to process. Files outside these years
+            are filtered out. Defaults to None (process all).
+        months (list of int, optional): Specific months to process. Slices outside these
+            months are ignored. Defaults to None (process all).
 
     Returns:
-        list of dicts: Sorted list of tasks.
-        Example: [{'time': pd.Timestamp, 'precip_file': str, 'precip_idx': int, 'li_file': str, 'li_idx': int}]
+        list of dict: A chronologically sorted list of dictionaries. Each dictionary represents
+            a single valid hourly timestep (a "task") containing the exact file paths and
+            NetCDF integer slice indices required by the parallel workers.
+            Example:
+            [
+                {
+                    'aligned_time': Timestamp('2000-01-01 00:00:00'),
+                    'precip_file': '/path/to/precip.nc',
+                    'precip_idx': 0,
+                    'precip_raw_time': Timestamp('2000-01-01 00:30:00'),
+                    'li_file': '/path/to/li.nc',
+                    'li_idx': 0,
+                    'li_raw_time': Timestamp('2000-01-01 00:00:00')
+                },
+                ...
+            ]
     """
     logger = logging.getLogger(__name__)
     tasks_dict = {}
 
-    # 1. Helper function for a single thread to execute
-    def _scan_single_file(filepath, file_type):
-        file_tasks = []
-        try:
-            with xr.open_dataset(filepath, engine="netcdf4") as ds:
-                if "time" not in ds:
-                    logger.warning(f"No 'time' dimension in {filepath}. Skipping.")
-                    return file_type, filepath, []
+    def _get_glob_pattern(template):
+        """Converts a user template like 'file_YYYYMMDD.nc' into a glob pattern 'file_*.nc'."""
+        pattern = template
+        # Replace common datetime placeholders with asterisks
+        for key in ["YYYY", "MM", "DD", "HH", "mm", "ss"]:
+            pattern = pattern.replace(key, "*")
+        # Collapse multiple asterisks into a single one for cleaner globbing
+        pattern = re.sub(r"\*+", "*", pattern)
+        return pattern
 
-                times = pd.to_datetime(ds["time"].values)
+    def scan_directory(directory, template, file_type):
+        """Finds files, applies the Smart Pre-Filter, and lazily extracts metadata."""
+        glob_pattern = _get_glob_pattern(template)
+        search_path = os.path.join(directory, "**", glob_pattern)
+        logger.info(f"Searching for {file_type} files using pattern: {search_path}")
 
-                for idx, t in enumerate(times):
-                    aligned_t = t.floor("h")
-                    if years and aligned_t.year not in years:
+        all_files = sorted(glob.glob(search_path, recursive=True))
+        if not all_files:
+            logger.warning(f"No files found for {file_type} in {directory}")
+            return
+
+        # --- SMART PRE-FILTER (Instant String Parsing) ---
+        filtered_files = []
+        for filepath in all_files:
+            if years:
+                # Strip out explicit time strings (like 'T2000') so they aren't confused as years
+                clean_filename = re.sub(r"T\d{4}", "", os.path.basename(filepath))
+                # Find all 4-digit sequences that look like years (1900-2099)
+                found_years = [
+                    int(y) for y in re.findall(r"(19\d{2}|20\d{2})", clean_filename)
+                ]
+
+                if found_years:
+                    min_y, max_y = min(found_years), max(found_years)
+                    # If the requested years do not overlap with the file's year bounds at all, skip it
+                    if not any(min_y <= y <= max_y for y in years):
                         continue
-                    if months and aligned_t.month not in months:
-                        continue
+            filtered_files.append(filepath)
 
-                    # Store the extracted metadata to be merged safely later
-                    file_tasks.append((aligned_t, idx, t))
+        dropped_count = len(all_files) - len(filtered_files)
+        if dropped_count > 0:
+            logger.info(
+                f"Smart Template Filter instantly dropped {dropped_count} irrelevant {file_type} files."
+            )
 
-        except Exception as e:
-            logger.error(f"Failed to scan {filepath} for metadata: {e}")
-
-        return file_type, filepath, file_tasks
-
-    # 2. Concurrency manager
-    def scan_files_parallel(file_list, file_type):
-        # max_workers=16 prevents I/O overload/disk thrashing and avoids OS open-file limits
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-            futures = [
-                executor.submit(_scan_single_file, f, file_type) for f in file_list
-            ]
-
-            # as_completed yields results as soon as a thread finishes
-            for future in concurrent.futures.as_completed(futures):
-                ftype, fpath, extracted_tasks = future.result()
-
-                # Update the shared dictionary safely in the MAIN thread
-                for aligned_t, idx, raw_t in extracted_tasks:
-                    if aligned_t not in tasks_dict:
-                        tasks_dict[aligned_t] = {"aligned_time": aligned_t}
-
-                    tasks_dict[aligned_t][f"{ftype}_file"] = fpath
-                    tasks_dict[aligned_t][f"{ftype}_idx"] = idx
-                    tasks_dict[aligned_t][f"{ftype}_raw_time"] = raw_t
-
-    # 3. Execute the concurrent scans
-    logger.info("Scanning Precipitation files for temporal mapping (Multi-threaded)...")
-    scan_files_parallel(precip_files, "precip")
-
-    if li_files:
         logger.info(
-            "Scanning Lifted Index files for temporal mapping (Multi-threaded)..."
+            f"Opening metadata for the remaining {len(filtered_files)} {file_type} files (Sequential)..."
         )
-        scan_files_parallel(li_files, "li")
 
-    # 4. Filter and build the final task list
+        # --- SAFE SEQUENTIAL XARRAY READ ---
+        for filepath in filtered_files:
+            try:
+                # Lazy load: only reads metadata headers, avoids HDF5 threading crashes
+                with xr.open_dataset(filepath, engine="netcdf4") as ds:
+                    if "time" not in ds:
+                        logger.warning(f"No 'time' dimension in {filepath}. Skipping.")
+                        continue
+
+                    times = pd.to_datetime(ds["time"].values)
+
+                    for idx, t in enumerate(times):
+                        # Floor to nearest hour to align accumulated variables (Precip) with instantaneous (LI)
+                        aligned_t = t.floor("h")
+
+                        # Sub-filter indices within the file based on requested config
+                        if years and aligned_t.year not in years:
+                            continue
+                        if months and aligned_t.month not in months:
+                            continue
+
+                        # Initialize alignment key if it doesn't exist
+                        if aligned_t not in tasks_dict:
+                            tasks_dict[aligned_t] = {"aligned_time": aligned_t}
+
+                        tasks_dict[aligned_t][f"{file_type}_file"] = filepath
+                        tasks_dict[aligned_t][f"{file_type}_idx"] = idx
+                        tasks_dict[aligned_t][f"{file_type}_raw_time"] = t
+            except Exception as e:
+                logger.error(f"Failed to scan {filepath} for metadata: {e}")
+
+    # Execute Scans for both directories
+    scan_directory(precip_dir, precip_template, "precip")
+    if li_dir and li_template:
+        scan_directory(li_dir, li_template, "li")
+
+    # Build Final Tasks List by checking for complete pairs
     valid_tasks = []
     missing_li = 0
     missing_precip = 0
@@ -100,7 +151,8 @@ def build_task_list(precip_files, li_files=None, years=None, months=None):
         has_precip = "precip_file" in task
         has_li = "li_file" in task
 
-        if li_files:
+        if li_dir:
+            # Both files are required for a valid task
             if has_precip and has_li:
                 valid_tasks.append(task)
             elif has_precip:
@@ -108,6 +160,7 @@ def build_task_list(precip_files, li_files=None, years=None, months=None):
             elif has_li:
                 missing_precip += 1
         else:
+            # Only Precip is required
             if has_precip:
                 task["li_file"] = None
                 task["li_idx"] = None

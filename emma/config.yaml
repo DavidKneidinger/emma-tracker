@@ -3,13 +3,14 @@
 # Data
 precip_data_directory: "/input/precip/"
 lifted_index_data_directory: "/input/lifted_index/"
-file_suffix: ".nc"
 detection_output_path: "/output/detection/"
 raw_tracking_output_dir: "/output/tracking_raw"
 filtered_tracking_output_dir: "/output/tracking/"
 
 precip_var_name: "precipitation"
 lifted_index_var_name: "LI"
+precip_filename_template: "precip_YYYYMMDDTHHMM.nc"
+lifted_index_filename_template: "lifted_index_YYYYMMDDTHHMM.nc"
 lat_name: "rlat"  # Name of the 1D y coordinate in the input data
 lon_name: "rlon" # Name of the 1D x coordinate in the input data
 data_source: "Description of your source data"
@@ -20,7 +21,7 @@ years: []
 months: [5, 6, 7, 8, 9]
 
 # Detection parameter
-detection: False
+detection: True
 detection_parameters:
   use_lifted_index: True
   min_size_threshold: 10  # min number of grid cells for an object to be detected
@@ -31,7 +32,7 @@ detection_parameters:
   lifted_index_threshold: -2  # K
 
 # Tracking parameter
-tracking: False
+tracking: True
 tracking_parameters:
   main_lifetime_thresh: 4  # min number of hours for an MCS in the mature state
   main_area_thresh: 3500  # min area for a system to be in the mature state
