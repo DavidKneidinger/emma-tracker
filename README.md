@@ -50,6 +50,11 @@
  ```
  
  For detailed documentation on parameters and preprocessing, please see the [Technical Guide](emma/README.md).
+
+ ## Input Data Requirements
+  The algorithm requires **hourly gridded precipitation data** and **lifted index (LI)** fields on the same grid. Both variables must be in separate NetCDF files.
+  While the algorithm takes different temporal chunks of data, yearly files are recommended for optimal performance.
+  Ideally the input files should be CF-compliant and contain metadata for the grid and data source, as this information is copied to the output files for traceability.
  
  ## Configuration (`config.yaml`)
  
@@ -61,13 +66,14 @@
 # Data
 precip_data_directory: "/path/to/hourly/precip"
 lifted_index_data_directory: "/path/to/hourly/lifted_index/"
-file_suffix: ".nc"
 detection_output_path: "/output/detection/"
 raw_tracking_output_dir: "/output/tracking_raw"  # path to the raw unfiltered tracking data
 filtered_tracking_output_dir: "/output/tracking/"  # path to the final tracking data
 
 precip_var_name: "precipitation"
 lifted_index_var_name: "LI"
+precip_filename_template: "precipitation_YYYY.nc"  # Template for input precipitation files
+lifted_index_filename_template: "LI_YYYY.nc"  # Template for input lifted index files
 lat_name: "rlat"  # Name of the 1D y coordinate in the input data
 lon_name: "rlon"  # Name of the 1D x coordinate in the input data
 data_source: "Information of your input data. This gets added to the attr of the output files"

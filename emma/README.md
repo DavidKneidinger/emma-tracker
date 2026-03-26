@@ -33,7 +33,12 @@
  | `precip_data_directory` | Root folder containing input NetCDF files. |
  | `raw_tracking_output_dir` | Where the initial tracking results (unfiltered) are saved. |
  | `filtered_tracking_output_dir` | Where the final, publication-ready MCS tracks are saved. |
- | `file_suffix` | Pattern to match input files (e.g., `.nc`). |
+ | `precip_var_name` | Name of the precipitation variable in the input files. |
+ | `lifted_index_var_name` | Name of the lifted index variable in the input files
+ | `precip_filename_template` | Template for input precipitation files, e.g., "precipitation_YYYY.nc". |
+ | `lifted_index_filename_template` | Template for input lifted index files, e.g., "LI_YYYY.nc". |
+ | `lat_name` / `lon_name` | Names of the 1D x and y coordinates in the input files. |
+ | `data_source` | A string describing the data source (e.g., "ERA5 reanalysis"). This gets added to the metadata of the output files for traceability
  
  ### Detection Thresholds
  | Parameter | Default | Scientific Meaning |
