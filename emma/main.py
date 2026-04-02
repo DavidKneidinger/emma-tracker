@@ -347,10 +347,20 @@ def main():
             # Apply month filter if specified
             if months_to_process and detection_results:
                 original_count = len(detection_results)
+
+                def get_month_safely(t):
+                    # Safely unpack 0-D numpy arrays if present
+                    t_scalar = t.item() if hasattr(t, "item") else t
+                    # cftime and python datetime objects have a .month attribute natively
+                    if hasattr(t_scalar, "month"):
+                        return t_scalar.month
+                    # Fallback for standard numpy.datetime64 objects
+                    return pd.to_datetime(t_scalar).month
+
                 detection_results = [
                     res
                     for res in detection_results
-                    if pd.to_datetime(res["time"]).month in months_to_process
+                    if get_month_safely(res["time"]) in months_to_process
                 ]
                 logger.info(
                     f"Filtered detection results for specified months. Kept {len(detection_results)} of {original_count} files."
