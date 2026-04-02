@@ -114,16 +114,20 @@ def build_task_list(
                         logger.warning(f"No 'time' dimension in {filepath}. Skipping.")
                         continue
 
-                    times = pd.to_datetime(ds["time"].values)
+                    times_raw = ds["time"].values
+                    times_floored = ds["time"].dt.floor("h").values
 
-                    for idx, t in enumerate(times):
-                        # Floor to nearest hour to align accumulated variables (Precip) with instantaneous (LI)
-                        aligned_t = t.floor("h")
+                    # Safely extract years and months using xarray's dt accessor
+                    years_arr = ds["time"].dt.year.values
+                    months_arr = ds["time"].dt.month.values
 
+                    for idx, (t, aligned_t, y, m) in enumerate(
+                        zip(times_raw, times_floored, years_arr, months_arr)
+                    ):
                         # Sub-filter indices within the file based on requested config
-                        if years and aligned_t.year not in years:
+                        if years and y not in years:
                             continue
-                        if months and aligned_t.month not in months:
+                        if months and m not in months:
                             continue
 
                         # Initialize alignment key if it doesn't exist
@@ -197,7 +201,6 @@ def get_dataset_encoding(ds):
         "zlib": False,
         "dtype": "float64",
         "units": "days since 1950-01-01 00:00:00",
-        "calendar": "standard",
     }
 
     # --- 2. Data Encoding (Compressed) ---
@@ -410,7 +413,6 @@ def load_precipitation_data(file_path, data_var, y_dim_name, x_dim_name, time_in
     """
     ds = xr.open_dataset(file_path, engine="netcdf4")
     ds = ds.isel(time=time_index)
-    ds["time"] = ds["time"].values.astype("datetime64[ns]")
 
     # 1. Load Native 1D Dimensions
     native_y = ds[y_dim_name].values
@@ -478,7 +480,6 @@ def load_lifted_index_data(file_path, data_var, y_dim_name, x_dim_name, time_ind
     """
     ds = xr.open_dataset(file_path, engine="netcdf4")
     ds = ds.isel(time=time_index)
-    ds["time"] = ds["time"].values.astype("datetime64[ns]")
 
     native_y = ds[y_dim_name].values
     native_x = ds[x_dim_name].values
@@ -651,14 +652,21 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
     Returns:
         None
     """
-    time_val = pd.to_datetime(detection_result["time"]).round("s")
-    year_str = time_val.strftime("%Y")
-    month_str = time_val.strftime("%m")
+    time_raw = detection_result["time"]
+    try:
+        # Works for standard times (ERA5, IMERG)
+        time_obj = pd.to_datetime(time_raw).round("s")
+    except (TypeError, ValueError):
+        # Fallback for cftime objects (CORDEX, CMIP)
+        time_obj = time_raw.item() if hasattr(time_raw, "item") else time_raw
+
+    year_str = time_obj.strftime("%Y")
+    month_str = time_obj.strftime("%m")
 
     structured_dir = os.path.join(output_dir, year_str, month_str)
     os.makedirs(structured_dir, exist_ok=True)
 
-    filename = f"detection_{time_val.strftime('%Y%m%dT%H')}.nc"
+    filename = f"detection_{time_obj.strftime('%Y%m%dT%H')}.nc"
     output_filepath = os.path.join(structured_dir, filename)
 
     # 1. Extract dimensions from grid_info (The new way)
@@ -705,7 +713,7 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
     ds = xr.Dataset(
         data_vars=data_vars,
         coords={
-            "time": [time_val],
+            "time": [time_obj],
             y_dim: y_1d,
             x_dim: x_1d,
         },
@@ -828,14 +836,19 @@ def save_tracking_result(
     Returns:
         None
     """
-    time_val = pd.to_datetime(tracking_data_for_timestep["time"]).round("s")
-    year_str = time_val.strftime("%Y")
-    month_str = time_val.strftime("%m")
+    time_raw = tracking_data_for_timestep["time"]
+    try:
+        time_obj = pd.to_datetime(time_raw).round("s")
+    except (TypeError, ValueError):
+        time_obj = time_raw.item() if hasattr(time_raw, "item") else time_raw
+
+    year_str = time_obj.strftime("%Y")
+    month_str = time_obj.strftime("%m")
 
     structured_dir = os.path.join(output_dir, year_str, month_str)
     os.makedirs(structured_dir, exist_ok=True)
 
-    filename = f"tracking_{time_val.strftime('%Y%m%dT%H')}.nc"
+    filename = f"tracking_{time_obj.strftime('%Y%m%dT%H')}.nc"
     output_filepath = os.path.join(structured_dir, filename)
 
     # 1. Extract dimensions from grid_info (The new way)
@@ -908,7 +921,7 @@ def save_tracking_result(
     ds = xr.Dataset(
         data_vars=data_vars,
         coords={
-            "time": [time_val],
+            "time": [time_obj],
             y_dim: y_1d,
             x_dim: x_1d,
         },
