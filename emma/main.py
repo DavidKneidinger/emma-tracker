@@ -183,7 +183,18 @@ def main():
             sys.exit(0)
 
         for task in all_tasks:
-            tasks_by_year[task["aligned_time"].year].append(task)
+            t = task["aligned_time"]
+            # Safely unpack 0-D numpy arrays if present
+            t_scalar = t.item() if hasattr(t, "item") else t
+            
+            # cftime objects have a .year attribute natively
+            if hasattr(t_scalar, "year"):
+                task_year = t_scalar.year
+            else:
+                # Fallback for standard numpy.datetime64 objects
+                task_year = pd.to_datetime(t_scalar).year
+                
+            tasks_by_year[task_year].append(task)
 
     # Determine the years to iterate over
     if cfg.detection:
