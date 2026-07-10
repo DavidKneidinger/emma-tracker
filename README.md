@@ -2,7 +2,8 @@
  
  **A robust detection and tracking algorithm for Mesoscale Convective Systems (MCS), optimized for climate model evaluation.**
  ##
- Since the algorithm is not yet peer-reviewed I would kindly ask you to get in touch with me (david.kneidinger@uni-graz.at) when you plan to use it.
+I would kindly ask you to get in touch with me (david.kneidinger@uni-graz.at) when you plan to use it.
+The publication can be found here: \url{https://gmd.copernicus.org/articles/19/5119/2026/}
  ---
  
  ## Overview
@@ -143,9 +144,9 @@ number_of_cores: 20
  ```
  
  ## Citation
- If you use the EMMA-Tracker in your research, please cite the following paper (currently still preprint):
+ If you use the EMMA-Tracker in your research, please cite the following paper:
  
- https://doi.org/10.22541/essoar.176798036.66459300/v2
+https://gmd.copernicus.org/articles/19/5119/2026/
 
  ## Reference Dataset
  A European 27-year warm-season dataset of MCSs, based on IMERG precipitation and ERA5 derived lifted index:
