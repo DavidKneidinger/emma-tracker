@@ -19,7 +19,7 @@ class DetectionParameters:  # Fixed typo: Paramters -> Parameters
 
 @dataclass
 class TrackingParameters:  # Fixed typo: Paramters -> Parameters
-    main_lifetime_thresh: int
+    main_lifetime_thresh_hours: int
     main_area_thresh: float
     nmaxmerge: int
 
@@ -51,6 +51,8 @@ class EmmaConfig:
     lat_name: str
     lon_name: str
     data_source: str
+
+    dt_hours: float
 
     # 3. Selection
     years: List[int]

@@ -176,6 +176,7 @@ def main():
             li_template=li_template,
             years=years_to_process,
             months=months_to_process,
+            dt_hours=cfg.dt_hours
         )
 
         if not all_tasks:
@@ -402,10 +403,11 @@ def main():
                 detection_results,
                 tracking_grid_info,
                 # Pass strict values from nested config
-                cfg.tracking_parameters.main_lifetime_thresh,
                 cfg.tracking_parameters.main_area_thresh,
                 cfg.tracking_parameters.nmaxmerge,
                 use_li_filter=cfg.detection_parameters.use_lifted_index,
+                dt_hours=cfg.dt_hours,
+                main_lifetime_thresh_hours=cfg.tracking_parameters.main_lifetime_thresh_hours
             )
 
             # Saving Phase

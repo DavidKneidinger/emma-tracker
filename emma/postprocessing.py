@@ -124,12 +124,16 @@ def process_single_timestep(
         # Calculate cell areas (km2) handling Regular vs Irregular grids
         area_map_km2 = calculate_grid_area_map(grid_dict)
 
-        # --- 2. Environmental Data Loading ---
+       # --- 2. Environmental Data Loading ---
         t_pd = pd.to_datetime(time_val)
-        time_key = t_pd.strftime("%Y%m%dT%H")
+        time_key_exact = t_pd.strftime("%Y%m%dT%H%M")
+        time_key_hour = t_pd.strftime("%Y%m%dT%H")
 
-        # Load Lifted Index (using shared helper)
-        li_file = next((f for f in li_files if time_key in os.path.basename(f)), None)
+        # Load Lifted Index (matches exact minute key first, falls back to hour key)
+        li_file = next(
+            (f for f in li_files if time_key_exact in os.path.basename(f)),
+            next((f for f in li_files if time_key_hour in os.path.basename(f)), None),
+        )
 
         current_li = None  # Initialize as None
         if li_file:
@@ -137,9 +141,10 @@ def process_single_timestep(
                 li_file, lifted_index_var_name, lat_name, lon_name
             )[-1].squeeze()
 
-        # Load Precipitation
+        # Load Precipitation (matches exact minute key first, falls back to hour key)
         precip_file = next(
-            (f for f in precip_files if time_key in os.path.basename(f)), None
+            (f for f in precip_files if time_key_exact in os.path.basename(f)),
+            next((f for f in precip_files if time_key_hour in os.path.basename(f)), None),
         )
 
         current_precip = None

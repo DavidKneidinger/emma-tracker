@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_task_list(
-    precip_dir, precip_template, li_dir=None, li_template=None, years=None, months=None
+    precip_dir, precip_template, li_dir=None, li_template=None, years=None, months=None, dt_hours=1.0
 ):
     """
     Scans data directories using filename templates to build a list of processing tasks.
@@ -34,6 +34,7 @@ def build_task_list(
             are filtered out. Defaults to None (process all).
         months (list of int, optional): Specific months to process. Slices outside these
             months are ignored. Defaults to None (process all).
+        dt_hours (float, optional): Time step resolution in hours. Used for flooring timestamps.
 
     Returns:
         list of dict: A chronologically sorted list of dictionaries. Each dictionary represents
@@ -115,7 +116,7 @@ def build_task_list(
                         continue
 
                     times_raw = ds["time"].values
-                    times_floored = ds["time"].dt.floor("h").values
+                    times_floored = ds["time"].dt.floor(f"{int(dt_hours * 60)}min").values
 
                     # Safely extract years and months using xarray's dt accessor
                     years_arr = ds["time"].dt.year.values
@@ -666,7 +667,7 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
     structured_dir = os.path.join(output_dir, year_str, month_str)
     os.makedirs(structured_dir, exist_ok=True)
 
-    filename = f"detection_{time_obj.strftime('%Y%m%dT%H')}.nc"
+    filename = f"detection_{time_obj.strftime('%Y%m%dT%H%M')}.nc"
     output_filepath = os.path.join(structured_dir, filename)
 
     # 1. Extract dimensions from grid_info (The new way)
@@ -848,7 +849,8 @@ def save_tracking_result(
     structured_dir = os.path.join(output_dir, year_str, month_str)
     os.makedirs(structured_dir, exist_ok=True)
 
-    filename = f"tracking_{time_obj.strftime('%Y%m%dT%H')}.nc"
+    filename = f"tracking_{time_obj.strftime('%Y%m%dT%H%M')}.nc"
+    
     output_filepath = os.path.join(structured_dir, filename)
 
     # 1. Extract dimensions from grid_info (The new way)

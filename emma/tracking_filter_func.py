@@ -115,15 +115,30 @@ def filter_relevant_systems(
 
 
 def apply_li_filter(
-    mcs_ids_list, lifted_index_regions_list, time_list, main_lifetime_thresh
+    mcs_ids_list, 
+    lifted_index_regions_list, 
+    time_list, 
+    main_lifetime_thresh_hours,
+    dt_hours=1.0,
 ):
     """
     Post‑filter MCS tracks by lifted_index_regions (0/1).
     A track passes if any LI==1 occurs within two hours before or at its start,
-    or if LI==1 first appears later and the remaining track length ≥ main_lifetime_thresh.
+    or if LI==1 first appears later and the remaining track length >= main_lifetime_thresh_hours.
 
-    Returns a new list of 2D arrays (same shape as mcs_ids_list) called main_mcs_id_robust.
+    Args:
+        mcs_ids_list (List[np.ndarray]): List of 2D arrays containing track IDs for each frame.
+        lifted_index_regions_list (List[np.ndarray]): List of 2D binary arrays (1 if convective, 0 otherwise).
+        time_list (List[datetime.datetime]): List of timestamps for each frame.
+        main_lifetime_thresh_hours (float): Minimum physical duration threshold in hours.
+        dt_hours (float, optional): Temporal resolution of input data in hours. Defaults to 1.0.
+
+    Returns:
+        List[np.ndarray]: A new list of 2D arrays containing only robust track IDs.
     """
+    min_frames = max(1, int(round(main_lifetime_thresh_hours / dt_hours)))
+    pre_window_frames = int(round(2.0 / dt_hours))
+
     robust_ids = [np.zeros_like(arr, dtype=int) for arr in mcs_ids_list]
     track_ids = np.unique(
         np.concatenate([arr[arr > 0].ravel() for arr in mcs_ids_list])
@@ -138,8 +153,8 @@ def apply_li_filter(
         if not times_present:
             continue
         t0 = times_present[0]
-        # Define pre-window (two hours before t0)
-        window = list(range(max(0, t0 - 2), t0 + 1))
+        # Define pre-window (two hours before t0, dynamically scaled by dt_hours)
+        window = list(range(max(0, t0 - pre_window_frames), t0 + 1))
 
         # Check for any convective LI in that window
         found = False
@@ -160,12 +175,12 @@ def apply_li_filter(
                     break
 
         if not found:
-            # No LI==1 anywhere → discard entire track
+            # No LI==1 anywhere -> discard entire track
             continue
 
-        # Ensure remaining lifetime ≥ threshold
+        # Ensure remaining lifetime >= threshold
         remaining = len([i for i in times_present if i >= onset])
-        if remaining < main_lifetime_thresh:
+        if remaining < min_frames:
             continue
 
         # Mark robust IDs from onset onward

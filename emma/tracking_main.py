@@ -31,10 +31,11 @@ logger = logging.getLogger(__name__)
 def track_mcs(
     detection_results,
     grid_info,
-    main_lifetime_thresh,
     main_area_thresh,
     nmaxmerge,
     use_li_filter,
+    dt_hours,
+    main_lifetime_thresh_hours
 ):
     """
     Tracks Mesoscale Convective Systems (MCSs) and filters them based on a combined set of criteria.
@@ -42,7 +43,7 @@ def track_mcs(
     This function first tracks all detected precipitation features over time using spatial overlap,
     handling complex merging and splitting events. After the initial tracking, it performs a
     rigorous filtering step to identify "main MCSs". A track qualifies as a main MCS only if it
-    contains a continuous period of at least 'main_lifetime_thresh' hours where, simultaneously,
+    contains a continuous period of at least 'main_lifetime_thresh_hours' hours where, simultaneously,
     its area is greater than 'main_area_thresh' and it is in a convective environment (if 'use_li_filter' is True).
 
     The function returns three distinct sets of track IDs representing different levels of filtering,
@@ -59,10 +60,11 @@ def track_mcs(
             - "lat" (np.ndarray): 1D array of latitudes.
             - "lon" (np.ndarray): 1D array of longitudes.
         grid_info (dict): dictionary containing the globally verified spatial dimensions and area map.
-        main_lifetime_thresh (int): The minimum number of consecutive hours a track must simultaneously meet the area and LI criteria to be considered a main MCS.
         main_area_thresh (float): The minimum area (in km²) a track must have to be considered in its mature phase.
         nmaxmerge (int): The maximum number of parent systems to consider in a single merging event.
         use_li_filter (bool): If True, enables the convective environment check based on the "lifted_index_regions" data.
+        dt_hours (float, optional): Time step resolution in hours (e.g., 0.5 for 30 minutes, 1.0 for 1 hour). Defaults to 1.0.
+        main_lifetime_thresh_hours (int): The minimum number of consecutive hours a track must simultaneously meet the area and LI criteria to be considered a main MCS.
 
     Returns:
         Tuple: A tuple containing the following organized results:
@@ -103,6 +105,9 @@ def track_mcs(
     # Dictionary to track robust flag for each assigned track ID.
     robust_flag_dict = {}
     convective_history = defaultdict(dict)
+
+    # Compute min number of frames required for a track to be considered a main MCS based on the lifetime threshold in hours and the time step resolution.
+    min_frames = max(1, int(round(main_lifetime_thresh_hours / dt_hours)))
 
     # Determine if LI filtering is available (only need to check detection_results[0])
     use_li = use_li_filter and ("lifted_index_regions" in detection_results[0])
@@ -367,7 +372,7 @@ def track_mcs(
                 bool_series_li.append(False)
 
         # Condition 1: Check if the track has a mature phase (based on area) that meets the lifetime threshold.
-        if compute_max_consecutive(bool_series_area) >= main_lifetime_thresh:
+        if compute_max_consecutive(bool_series_area) >= min_frames:
 
             # If the first condition is met, we then check the LI condition.
             # We create a list that is True only at timesteps where BOTH the area and LI criteria were met.
