@@ -15,14 +15,14 @@ SERIAL_MODE = False
 NUM_CORES = 20
 
 # Directories
-INPUT_BASE = Path("/reloclim/dkn/data/ERA5/lifted_index_final")
-OUTPUT_BASE = Path("/reloclim/dkn/data/ERA5/lifted_index_corr_remap")
+INPUT_BASE = Path("/reloclim/dkn/data/ERA5/lifted_index")
+OUTPUT_BASE = Path("/reloclim/dkn/data/ERA5/lifted_index_remap")
 
 # Weights File (The one you verified with ncdump)
 WEIGHTS_FILE = "./remapping_weights/bilinear_era5_to_target.nc"
 
 # Processing Scope
-YEARS = list(np.arange(1998, 2025))
+YEARS = list(np.arange(2025, 2026))
 MONTHS = ['05', '06', '07', '08', '09']
 
 # Target Grid Definition (IMERG 0.1 deg)

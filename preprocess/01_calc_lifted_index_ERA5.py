@@ -12,7 +12,7 @@ from functools import partial
 # Adjust these paths to match your ERA5 directory structure
 PL_DIR = Path("/reloclim/dkn/data/ERA5/pressure_level") 
 SURF_DIR = Path("/reloclim/dkn/data/ERA5/surface")
-OUTPUT_DIR = Path("/reloclim/dkn/data/ERA5/lifted_index_final")
+OUTPUT_DIR = Path("/reloclim/dkn/data/ERA5/lifted_index")
 
 # Processing Settings
 WARM_SEASON_MONTHS = [5, 6, 7, 8, 9]
@@ -279,10 +279,10 @@ def process_month(task_info, output_base_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start_year", type=int, default=1998)
+    parser.add_argument("--start_year", type=int, default=2025)
     parser.add_argument("--end_year", type=int, default=2025)
     parser.add_argument("--cores", type=int, default=20)
-    parser.add_argument("--output_dir", type=str, default="/reloclim/dkn/data/ERA5/lifted_index_final")
+    parser.add_argument("--output_dir", type=str, default="/reloclim/dkn/data/ERA5/lifted_index")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
