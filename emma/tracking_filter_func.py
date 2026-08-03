@@ -115,9 +115,9 @@ def filter_relevant_systems(
 
 
 def apply_env_filter(
-    mcs_ids_list, 
-    env_var_regions_list, 
-    time_list, 
+    mcs_ids_list,
+    env_var_regions_list,
+    time_list,
     main_lifetime_thresh_hours,
     dt_hours=1.0,
 ):

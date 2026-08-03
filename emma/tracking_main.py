@@ -4,7 +4,7 @@ tracking_main.py
 
 Main routine for tracking Mesoscale Convective Systems (MCSs) across multiple timesteps.
 Tracks are assigned via spatial overlap, and a robust filtering based on an environmental variable
-detection (provided in the detection results as 'env_var_regions' or 'lifted_index_regions') is applied.
+detection (provided in the detection results as 'env_var_regions') is applied.
 
 The script returns per-timestep tracking arrays, main track IDs, lifetime arrays,
 merging and splitting events, and tracking center positions.
@@ -53,7 +53,7 @@ def track_mcs(
     Args:
         detection_results (List[dict]): A list where each dictionary represents one timestep and contains:
             - "final_labeled_regions" (np.ndarray): 2D array of detected cluster labels.
-            - "lifted_index_regions" / "env_var_regions" (np.ndarray): 2D binary array where 1 indicates a cluster met environmental criteria.
+            - "env_var_regions" (np.ndarray): 2D binary array where 1 indicates a cluster met environmental criteria.
             - "center_points" (dict): Mapping of cluster label to its (lat, lon) center. Optional.
             - "time" (datetime.datetime): Timestamp for the data.
             - "lat2d" (np.ndarray): 2D array of latitudes.
@@ -104,10 +104,7 @@ def track_mcs(
     min_frames = max(1, int(round(main_lifetime_thresh_hours / dt_hours)))
 
     # Determine if environmental filtering is available
-    use_env = use_env_filter and (
-        "lifted_index_regions" in detection_results[0]
-        or "env_var_regions" in detection_results[0]
-    )
+    use_env = use_env_filter and "env_var_regions" in detection_results[0]
 
     for idx, detection_result in enumerate(detection_results):
         final_labeled_regions = detection_result["final_labeled_regions"]
@@ -117,7 +114,7 @@ def track_mcs(
         # Get environmental regions if available.
         if use_env:
             env_regions = detection_result.get(
-                "env_var_regions", detection_result.get("lifted_index_regions")
+                "env_var_regions", detection_result.get("env_var_regions")
             )
         else:
             env_regions = None

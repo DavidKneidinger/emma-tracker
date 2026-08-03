@@ -68,9 +68,7 @@ def detect_mcs_in_file(
 
     # Initialize env_var_regions as an array initialized with the threshold
     # This ensures it always has the correct shape and type for your output format.
-    env_var_regions = (
-        np.ones_like(main_var, dtype=np.int32) * env_var_threshold
-    )
+    env_var_regions = np.ones_like(main_var, dtype=np.int32) * env_var_threshold
 
     # Step 1: Smooth the main variable field
     main_var_smooth = smooth_field(main_var)
@@ -132,7 +130,7 @@ def detect_mcs_in_file(
     # Prepare detection result
     detection_result = {
         "final_labeled_regions": final_labeled_regions,
-        "lifted_index_regions": env_var_regions,
+        "env_var_regions": env_var_regions,
         "lat2d": lat2d,
         "lon2d": lon2d,
         "lat": lat,

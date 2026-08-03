@@ -5,9 +5,7 @@ from scipy.ndimage import binary_dilation, generate_binary_structure, gaussian_f
 from skimage.measure import label as connected_label
 
 
-def smooth_field(
-    main_var: np.ndarray, sigma: float = 1.0
-) -> np.ndarray:
+def smooth_field(main_var: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     """
     Apply a Gaussian filter to smooth a 2D field.
 

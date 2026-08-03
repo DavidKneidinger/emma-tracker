@@ -33,9 +33,7 @@ def environmental_filter(
     return final_labeled_regions
 
 
-def filter_mcs_candidates(
-    clusters, core_plumes, min_size_threshold, min_nr_plumes
-):
+def filter_mcs_candidates(clusters, core_plumes, min_size_threshold, min_nr_plumes):
     """
     Filter clusters to identify MCS candidates based on area and number of core plumes.
 

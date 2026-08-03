@@ -159,9 +159,7 @@ def main():
         logger.info("Building task list from directories and templates...")
 
         env_dir = (
-            cfg.env_var_data_directory
-            if cfg.detection_parameters.use_env_var
-            else None
+            cfg.env_var_data_directory if cfg.detection_parameters.use_env_var else None
         )
         env_template = (
             cfg.env_var_filename_template
@@ -187,14 +185,14 @@ def main():
             t = task["aligned_time"]
             # Safely unpack 0-D numpy arrays if present
             t_scalar = t.item() if hasattr(t, "item") else t
-            
+
             # cftime objects have a .year attribute natively
             if hasattr(t_scalar, "year"):
                 task_year = t_scalar.year
             else:
                 # Fallback for standard numpy.datetime64 objects
                 task_year = pd.to_datetime(t_scalar).year
-                
+
             tasks_by_year[task_year].append(task)
 
     # Determine the years to iterate over
@@ -266,6 +264,10 @@ def main():
                     first_env_var_file=first_task.get("env_var_file"),
                     y_dim_name=lat_name,
                     x_dim_name=lon_name,
+                    main_var_name=main_var_data_var,
+                    env_var_name=env_var_data_var
+                    if cfg.detection_parameters.use_env_var
+                    else None,
                 )
 
             logger.info(
@@ -305,6 +307,7 @@ def main():
                                 detection_output_path,
                                 data_source,
                                 global_grid_template,
+                                config=cfg,
                             )
                         except Exception as e:
                             logger.error(f"A detection task failed: {e}")
@@ -332,6 +335,7 @@ def main():
                         detection_output_path,
                         data_source,
                         global_grid_template,
+                        config=cfg,
                     )
             logger.info(f"Detection for year {year} finished.")
             print(f"Detection for year {year} finished.")
@@ -407,7 +411,7 @@ def main():
                 cfg.tracking_parameters.nmaxmerge,
                 use_li_filter=cfg.detection_parameters.use_env_var,
                 dt_hours=cfg.dt_hours,
-                main_lifetime_thresh_hours=cfg.tracking_parameters.main_lifetime_thresh_hours
+                main_lifetime_thresh_hours=cfg.tracking_parameters.main_lifetime_thresh_hours,
             )
 
             # Saving Phase

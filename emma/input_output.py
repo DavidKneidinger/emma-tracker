@@ -1,3 +1,16 @@
+"""
+emma/input_output.py
+
+Input/Output, Data Loading, Unit Conversion, and CF-Compliant NetCDF Export Module.
+
+This module provides the central I/O pipeline for the EMMA tracking framework, including:
+1. Smart directory scanning and task list construction across dataset time slices.
+2. Robust dataset loading with strict 1D/2D grid coordinate validation.
+3. Unit conversion utilities for primary and environmental variables.
+4. Standardized dataset encoding and compression logic optimized for tools like ncview.
+5. CF-compliant output export for detection, tracking, and post-processing NetCDF files.
+"""
+
 import xarray as xr
 import numpy as np
 import pandas as pd
@@ -28,25 +41,26 @@ def build_task_list(
     This function utilizes a "Smart Pre-Filter" string-parsing algorithm to instantly
     drop files that do not fall within the requested years, drastically reducing disk I/O.
     It then lazily loads the surviving NetCDF files using xarray to extract the exact
-    chunk-agnostic integer indices (time slices) for the multiprocessing workers.
+    chunk-agnostic integer indices (time slices) for multiprocessing workers.
 
     Args:
         main_var_dir (str): Base directory containing main variable NetCDF files.
         main_var_template (str): Filename naming convention for main variable files
             (e.g., "cerra_tp_YYYYMMDDTHHMM.nc" or "TOT_PREC_YYYY-YYYY.nc").
-        env_var_dir (str, optional): Base directory containing environmental variable files. Defaults to None.
-        env_var_template (str, optional): Filename naming convention for env files. Defaults to None.
+        env_var_dir (str, optional): Base directory containing environmental variable files.
+            Defaults to None.
+        env_var_template (str, optional): Filename naming convention for environmental files.
+            Defaults to None.
         years (list of int, optional): Specific years to process. Files outside these years
             are filtered out. Defaults to None (process all).
         months (list of int, optional): Specific months to process. Slices outside these
             months are ignored. Defaults to None (process all).
         dt_hours (float, optional): Time step resolution in hours. Used for flooring timestamps.
+            Defaults to 1.0.
 
     Returns:
-        list of dict: A chronologically sorted list of dictionaries. Each dictionary represents
-            a single valid hourly timestep (a "task") containing the exact file paths and
-            NetCDF integer slice indices required by the parallel workers.
-            Example:
+        list of dict: A chronologically sorted list of task dictionaries required by parallel
+            workers. Each dictionary contains exact file paths and NetCDF integer slice indices:
             [
                 {
                     'aligned_time': Timestamp('2000-01-01 00:00:00'),
@@ -66,10 +80,8 @@ def build_task_list(
     def _get_glob_pattern(template):
         """Converts a user template like 'file_YYYYMMDD.nc' into a glob pattern 'file_*.nc'."""
         pattern = template
-        # Replace common datetime placeholders with asterisks
         for key in ["YYYY", "MM", "DD", "HH", "mm", "ss"]:
             pattern = pattern.replace(key, "*")
-        # Collapse multiple asterisks into a single one for cleaner globbing
         pattern = re.sub(r"\*+", "*", pattern)
         return pattern
 
@@ -88,16 +100,14 @@ def build_task_list(
         filtered_files = []
         for filepath in all_files:
             if years:
-                # Strip out explicit time strings (like 'T2000') so they aren't confused as years
+                # Strip explicit time strings (e.g., 'T2000') so they aren't confused as years
                 clean_filename = re.sub(r"T\d{4}", "", os.path.basename(filepath))
-                # Find all 4-digit sequences that look like years (1900-2099)
                 found_years = [
                     int(y) for y in re.findall(r"(19\d{2}|20\d{2})", clean_filename)
                 ]
 
                 if found_years:
                     min_y, max_y = min(found_years), max(found_years)
-                    # If the requested years do not overlap with the file's year bounds at all, skip it
                     if not any(min_y <= y <= max_y for y in years):
                         continue
             filtered_files.append(filepath)
@@ -109,35 +119,33 @@ def build_task_list(
             )
 
         logger.info(
-            f"Opening metadata for the remaining {len(filtered_files)} {file_type} files (Sequential)..."
+            f"Opening metadata for remaining {len(filtered_files)} {file_type} files..."
         )
 
         # --- SAFE SEQUENTIAL XARRAY READ ---
         for filepath in filtered_files:
             try:
-                # Lazy load: only reads metadata headers, avoids HDF5 threading crashes
                 with xr.open_dataset(filepath, engine="netcdf4") as ds:
                     if "time" not in ds:
                         logger.warning(f"No 'time' dimension in {filepath}. Skipping.")
                         continue
 
                     times_raw = ds["time"].values
-                    times_floored = ds["time"].dt.floor(f"{int(dt_hours * 60)}min").values
+                    times_floored = (
+                        ds["time"].dt.floor(f"{int(dt_hours * 60)}min").values
+                    )
 
-                    # Safely extract years and months using xarray's dt accessor
                     years_arr = ds["time"].dt.year.values
                     months_arr = ds["time"].dt.month.values
 
                     for idx, (t, aligned_t, y, m) in enumerate(
                         zip(times_raw, times_floored, years_arr, months_arr)
                     ):
-                        # Sub-filter indices within the file based on requested config
                         if years and y not in years:
                             continue
                         if months and m not in months:
                             continue
 
-                        # Initialize alignment key if it doesn't exist
                         if aligned_t not in tasks_dict:
                             tasks_dict[aligned_t] = {"aligned_time": aligned_t}
 
@@ -147,12 +155,10 @@ def build_task_list(
             except Exception as e:
                 logger.error(f"Failed to scan {filepath} for metadata: {e}")
 
-    # Execute Scans for both directories
     scan_directory(main_var_dir, main_var_template, "main_var")
     if env_var_dir and env_var_template:
         scan_directory(env_var_dir, env_var_template, "env_var")
 
-    # Build Final Tasks List by checking for complete pairs
     valid_tasks = []
     missing_env_var = 0
     missing_main_var = 0
@@ -163,7 +169,6 @@ def build_task_list(
         has_env_var = "env_var_file" in task
 
         if env_var_dir:
-            # Both files are required for a valid task
             if has_main_var and has_env_var:
                 valid_tasks.append(task)
             elif has_main_var:
@@ -171,16 +176,19 @@ def build_task_list(
             elif has_env_var:
                 missing_main_var += 1
         else:
-            # Only main_var is required
             if has_main_var:
                 task["env_var_file"] = None
                 task["env_var_idx"] = None
                 valid_tasks.append(task)
 
     if missing_env_var > 0:
-        logger.warning(f"Found {missing_env_var} timesteps with main_var but missing env_var.")
+        logger.warning(
+            f"Found {missing_env_var} timesteps with main_var but missing env_var."
+        )
     if missing_main_var > 0:
-        logger.info(f"Found {missing_main_var} timesteps with env_var but missing main_var.")
+        logger.info(
+            f"Found {missing_main_var} timesteps with env_var but missing main_var."
+        )
 
     logger.info(f"Total valid timesteps identified for processing: {len(valid_tasks)}")
     return valid_tasks
@@ -188,21 +196,25 @@ def build_task_list(
 
 def get_dataset_encoding(ds):
     """
-    Centralized encoding logic for all EMMA output files.
-    Ensures consistency across detection, tracking, and post-processing.
+    Centralized encoding logic for all EMMA output NetCDF files.
 
-    Fixes for ncview:
-    1. 1D Coordinates (lat, lon, time) are UNCOMPRESSED (zlib=False).
-    2. Data variables are COMPRESSED (zlib=True).
-    3. Time uses a fixed epoch.
-    4. Masks use _FillValue = -1 so 0 is visible as background.
+    Ensures full compatibility with standard visualization utilities (e.g., ncview, Panoply)
+    and CF metadata conventions:
+    1. 1D Coordinate variables (lat, lon, time) are uncompressed (`zlib=False`).
+    2. Data variables are compressed with DEFLATE (`zlib=True`, `complevel=4`).
+    3. Time coordinate uses a fixed reference epoch ("days since 1950-01-01 00:00:00").
+    4. Mask and ID integer variables use `_FillValue = -1` so value 0 remains background.
+
+    Args:
+        ds (xarray.Dataset): The dataset to generate encoding options for.
+
+    Returns:
+        dict: Encoding dictionary mapping variable names to xarray compression parameters.
     """
     encoding = {}
 
-    # --- 1. Coordinate Encoding (Uncompressed, No Fill Value) ---
     coord_encoding = {"_FillValue": None, "zlib": False, "dtype": "float32"}
 
-    # Standardize Time Epoch
     time_encoding = {
         "_FillValue": None,
         "zlib": False,
@@ -210,39 +222,29 @@ def get_dataset_encoding(ds):
         "units": "days since 1950-01-01 00:00:00",
     }
 
-    # --- 2. Data Encoding (Compressed) ---
+    if "time" in ds:
+        encoding["time"] = time_encoding
+
+    for c in ["lat", "lon", "rlat", "rlon", "latitude", "longitude"]:
+        if c in ds:
+            encoding[c] = coord_encoding
+
+    if "rotated_pole" in ds:
+        encoding["rotated_pole"] = {"dtype": "int32"}
+
     int_encoding = {
         "zlib": True,
         "complevel": 4,
         "shuffle": True,
-        "_FillValue": -1,  # Critical: 0 becomes valid background
+        "_FillValue": -1,
         "dtype": "int32",
     }
     float_encoding = {"zlib": True, "complevel": 4, "dtype": "float32"}
     byte_encoding = {"dtype": "int8"}
 
-    # Apply Rules based on Variable Existence
-    if "time" in ds:
-        encoding["time"] = time_encoding
-
-    # 1D Coordinates
-    for c in ["lat", "lon", "rlat", "rlon"]:
-        if c in ds:
-            encoding[c] = coord_encoding
-
-    # 2D Coordinates (Auxiliary) -> Compressed to save space
-    for c in ["latitude", "longitude"]:
-        if c in ds:
-            encoding[c] = float_encoding
-
-    # Rotated Pole Container
-    if "rotated_pole" in ds:
-        encoding["rotated_pole"] = {"dtype": "int32"}
-
-    # Gridded Data Variables
     grid_vars = [
         "final_labeled_regions",
-        "lifted_index_regions",
+        "env_var_regions",
         "robust_mcs_id",
         "mcs_id",
         "mcs_id_merge_split",
@@ -251,7 +253,6 @@ def get_dataset_encoding(ds):
         if v in ds:
             encoding[v] = int_encoding
 
-    # Tabular (Track) Variables
     if "label_id" in ds:
         encoding["label_id"] = {"dtype": "int32"}
     if "label_lat" in ds:
@@ -273,8 +274,14 @@ def get_dataset_encoding(ds):
 
 def save_dataset_to_netcdf(ds, output_path):
     """
-    Shared function to save any EMMA Xarray Dataset to NetCDF.
-    Applies the standardized encoding and compression rules.
+    Saves an xarray Dataset to a NetCDF file with standardized encoding options.
+
+    Args:
+        ds (xarray.Dataset): The dataset to save.
+        output_path (str): File system path where the NetCDF file will be written.
+
+    Returns:
+        None
     """
     encoding = get_dataset_encoding(ds)
     ds.to_netcdf(output_path, encoding=encoding)
@@ -282,10 +289,19 @@ def save_dataset_to_netcdf(ds, output_path):
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     """
-    Global exception handler to log any uncaught exceptions.
-    This is assigned to sys.excepthook in main.py.
+    Global uncaught exception handler assigned to `sys.excepthook`.
+
+    Logs unhandled critical errors to file and console while gracefully ignoring
+    user-initiated interrupts (Ctrl+C).
+
+    Args:
+        exc_type (type): Exception class type.
+        exc_value (Exception): Exception instance containing error details.
+        exc_traceback (traceback): Python traceback object.
+
+    Returns:
+        None
     """
-    # Don't log KeyboardInterrupt (Ctrl+C) as a critical error
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
@@ -296,21 +312,31 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 
 def setup_logging(output_dir, filename="mcs_tracking.log", mode="a"):
     """
-    Configures logging. Removes old handlers to prevent duplicate messages.
+    Configures application-wide logging handlers and formatting.
+
+    Clears pre-existing file handlers to avoid duplicate log entries and sets up
+    simultaneous output to both file and standard console output.
+
+    Args:
+        output_dir (str): Directory where the log file will be saved.
+        filename (str, optional): Name of the log file. Defaults to "mcs_tracking.log".
+        mode (str, optional): File opening mode ('w' for overwrite, 'a' for append).
+            Defaults to "a".
+
+    Returns:
+        None
     """
     log_filepath = os.path.join(output_dir, filename)
     os.makedirs(os.path.dirname(log_filepath), exist_ok=True)
 
-    logger = logging.getLogger()  # Get the root logger
+    logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
-    # Shut down and remove existing file handlers
     for handler in logger.handlers[:]:
         if isinstance(handler, logging.FileHandler):
             handler.close()
             logger.removeHandler(handler)
 
-    # Add the new file handler
     file_handler = logging.FileHandler(log_filepath, mode=mode)
     formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
@@ -318,7 +344,6 @@ def setup_logging(output_dir, filename="mcs_tracking.log", mode="a"):
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
-    # Ensure console output is still active
     if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
@@ -327,19 +352,19 @@ def setup_logging(output_dir, filename="mcs_tracking.log", mode="a"):
 
 def convert_main_var_units(main_var, target_unit="mm/h"):
     """
-    Convert the main variable DataArray to the target unit if required.
+    Converts primary tracking variable values to standardized target units.
 
-    Recognized unit conversions for precipitation:
-      - 'm', 'meter', 'metre': multiply by 1000 (assumed hourly accumulation)
-      - 'kg m-2 s-1': multiply by 3600 (from mm/s to mm/h, given 1 kg/m² = 1 mm water)
-      - 'mm', 'mm/h', 'mm/hr': no conversion needed
+    Recognized conversions for precipitation fields:
+    - 'm', 'meter', 'metre': Multiplies by 1000.0 (hourly accumulation).
+    - 'kg m-2 s-1': Multiplies by 3600.0 (mm/s to mm/h conversion).
+    - 'mm', 'mm/h', 'mm/hr', 'kg m-2', 'mm h-1': Leaves values unchanged (factor 1.0).
 
-    Parameters:
-    - main_var: xarray DataArray of main variable values.
-    - target_unit: Desired unit for the output (default: "mm/h").
+    Args:
+        main_var (xarray.DataArray): DataArray containing primary tracking field.
+        target_unit (str, optional): Desired unit attribute string. Defaults to "mm/h".
 
     Returns:
-    - new_main_var: DataArray with converted values and updated units attribute.
+        xarray.DataArray: DataArray with converted values and updated `units` attribute.
     """
     orig_units = main_var.attrs.get("units", "").lower()
 
@@ -350,8 +375,8 @@ def convert_main_var_units(main_var, target_unit="mm/h"):
     elif orig_units in ["mm", "mm/h", "mm/hr", "kg m-2", "mm h-1"]:
         factor = 1.0
     else:
-        print(
-            f"Warning: Unrecognized main_var units '{orig_units}'. No conversion applied."
+        logger.warning(
+            f"Unrecognized main_var units '{orig_units}'. No scaling applied."
         )
         factor = 1.0
 
@@ -362,29 +387,25 @@ def convert_main_var_units(main_var, target_unit="mm/h"):
 
 def convert_env_var_units(env_var, target_unit="K"):
     """
-    Convert the environmental variable DataArray to the target unit if required.
+    Converts environmental variable values to standardized target units.
 
-    Recognized unit conversions:
-      - degree Celsius to K
+    Recognized conversions:
+    - 'K', 'Kelvin', '°C', 'degree_Celcius': Preserves difference scale offset (constant 0).
 
-    Parameters:
-    - env_var: xarray DataArray of environmental variable values.
-    - target_unit: Desired unit for the output (default: "K").
+    Args:
+        env_var (xarray.DataArray): DataArray containing environmental field.
+        target_unit (str, optional): Desired unit attribute string. Defaults to "K".
 
     Returns:
-    - new_env_var: DataArray with converted values and updated units attribute.
+        xarray.DataArray: DataArray with updated `units` attribute.
     """
     orig_units = env_var.attrs.get("units", "")
 
-    if orig_units in ["K", "Kelvin"]:
+    if orig_units in ["K", "Kelvin", "°C", "degree_Celcius"]:
         constant = 0
-    elif orig_units in ["°C", "degree_Celcius"]:
-        constant = 0  # Lifted index / temperature difference measures retain offset
     else:
-        print(
-            f"Warning: Unrecognized env_var units '{orig_units}'. No conversion applied."
-        )
-        constant = 0  # Default to 0 to be safe
+        logger.warning(f"Unrecognized env_var units '{orig_units}'. No offset applied.")
+        constant = 0
 
     new_env_var = env_var + constant
     new_env_var.attrs["units"] = target_unit
@@ -393,41 +414,41 @@ def convert_env_var_units(env_var, target_unit="K"):
 
 def load_main_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0):
     """
-    Load the dataset and select the specified time step, scaling the main variable
-    to target units for consistency with detection thresholds.
+    Loads a dataset timestep and extracts converted primary variable values and spatial coordinates.
 
-    This function implements STRICT grid validation:
-    1. It loads the native grid coordinates (1D or 2D) based on y_dim_name/x_dim_name.
-    2. It explicitly searches for 2D auxiliary geographic coordinates (lat/lon) if the
-       native grid is 1D (e.g. CORDEX rotated grids).
-    3. It raises a ValueError if rotated dimensions are detected but no 2D geographic
-       coordinates are found, preventing silent georeferencing errors.
+    Implements strict grid validation:
+    1. Reads 1D native spatial dimensions (`y_dim_name`, `x_dim_name`).
+    2. Searches for 2D auxiliary geographic coordinates (`latitude`/`longitude`, `lat`/`lon`).
+    3. Raises `ValueError` if rotated grid dimensions exist without auxiliary 2D coordinates.
 
-    Parameters:
-    - file_path: Path to the NetCDF file.
-    - data_var: Name of the main variable.
-    - y_dim_name: Name of the latitude variable (native dimension).
-    - x_dim_name: Name of the longitude variable (native dimension).
-    - time_index: Index of the time step to select.
+    Args:
+        file_path (str): Path to the NetCDF file.
+        data_var (str): Variable name of the primary tracking field.
+        y_dim_name (str): Latitude / y-dimension variable name.
+        x_dim_name (str): Longitude / x-dimension variable name.
+        time_index (int, optional): NetCDF integer slice index along the time dimension.
+            Defaults to 0.
 
     Returns:
-    - ds: xarray Dataset for the selected time.
-    - lat2d: 2D array of latitudes (True Geographic Coordinates).
-    - lon2d: 2D array of longitudes (True Geographic Coordinates).
-    - lat: 1D array of native latitudes (or y-indices).
-    - lon: 1D array of native longitudes (or x-indices).
-    - main_var_converted: 2D DataArray of converted main variable values.
+        tuple: (ds, lat2d, lon2d, native_y, native_x, main_var_converted)
+            - ds (xarray.Dataset): Sliced dataset at `time_index`.
+            - lat2d (numpy.ndarray): 2D array of true geographic latitudes.
+            - lon2d (numpy.ndarray): 2D array of true geographic longitudes.
+            - native_y (numpy.ndarray): 1D array of native y-coordinates.
+            - native_x (numpy.ndarray): 1D array of native x-coordinates.
+            - main_var_converted (xarray.DataArray): 2D unit-converted main variable values.
+
+    Raises:
+        ValueError: If native grid configuration is invalid or missing auxiliary 2D coordinates.
     """
     ds = xr.open_dataset(file_path, engine="netcdf4")
     ds = ds.isel(time=time_index)
 
-    # 1. Load Native 1D Dimensions
     native_y = ds[y_dim_name].values
     native_x = ds[x_dim_name].values
 
     lat2d, lon2d = None, None
 
-    # 2. Determine 2D Geographic Coordinates
     if native_y.ndim == 1 and native_x.ndim == 1:
         aux_candidates = [("lat", "lon"), ("latitude", "longitude")]
 
@@ -439,7 +460,6 @@ def load_main_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0
                     lon2d = ds[aux_lon].values
                     break
 
-        # 3. Strict Decision Logic
         if lat2d is None:
             is_rotated_dim = "rlat" in y_dim_name or "rlon" in x_dim_name
             if is_rotated_dim:
@@ -448,11 +468,9 @@ def load_main_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0
                     "implying a rotated grid. However, no valid 2D geographic coordinates "
                     "were found. Aborting to prevent georeferencing errors."
                 )
-            # Create meshgrid for regular grids
             lon2d, lat2d = np.meshgrid(native_x, native_y)
-
     else:
-        raise ValueError("Please provide the name of the 1D dimension coordinates.")
+        raise ValueError("Please provide the name of 1D dimension coordinates.")
 
     main_var_da = ds[str(data_var)]
     main_var_converted = convert_main_var_units(main_var_da)
@@ -462,28 +480,29 @@ def load_main_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0
 
 def load_env_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0):
     """
-    Load the dataset and select the specified time step, scaling the environmental
-    variable DataArray to target units for consistency with detection thresholds.
+    Loads a dataset timestep and extracts environmental variable values and spatial coordinates.
 
-    This function implements STRICT grid validation identical to load_main_var_data:
-    1. Loads native coordinates.
-    2. Searches for 2D auxiliary coordinates if native coords are 1D.
-    3. Raises ValueError if rotated grid implied but 2D coords missing.
+    Implements strict grid validation identical to `load_main_var_data`.
 
-    Parameters:
-    - file_path: Path to the NetCDF file.
-    - data_var: Name of the environmental variable.
-    - y_dim_name: Name of the latitude variable.
-    - x_dim_name: Name of the longitude variable.
-    - time_index: Index of the time step to select.
+    Args:
+        file_path (str): Path to the NetCDF file.
+        data_var (str): Variable name of the environmental field.
+        y_dim_name (str): Latitude / y-dimension variable name.
+        x_dim_name (str): Longitude / x-dimension variable name.
+        time_index (int, optional): NetCDF integer slice index along the time dimension.
+            Defaults to 0.
 
     Returns:
-    - ds: xarray Dataset for the selected time.
-    - lat2d: 2D array of latitudes (True Geographic Coordinates).
-    - lon2d: 2D array of longitudes (True Geographic Coordinates).
-    - lat: 1D array of native latitudes.
-    - lon: 1D array of native longitudes
-    - env_var_converted: 2D DataArray of environmental variable values (scaled to K).
+        tuple: (ds, lat2d, lon2d, native_y, native_x, env_var_converted)
+            - ds (xarray.Dataset): Sliced dataset at `time_index` with unused variables dropped.
+            - lat2d (numpy.ndarray): 2D array of true geographic latitudes.
+            - lon2d (numpy.ndarray): 2D array of true geographic longitudes.
+            - native_y (numpy.ndarray): 1D array of native y-coordinates.
+            - native_x (numpy.ndarray): 1D array of native x-coordinates.
+            - env_var_converted (xarray.DataArray): 2D unit-converted environmental values.
+
+    Raises:
+        ValueError: If native grid configuration is invalid or missing auxiliary 2D coordinates.
     """
     ds = xr.open_dataset(file_path, engine="netcdf4")
     ds = ds.isel(time=time_index)
@@ -512,14 +531,12 @@ def load_env_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0)
                     "implying a rotated grid but 2D coordinates are missing."
                 )
             lon2d, lat2d = np.meshgrid(native_x, native_y)
-
     else:
-        raise ValueError("Please provide the name of the 1D dimension coordinates.")
+        raise ValueError("Please provide the name of 1D dimension coordinates.")
 
     env_var_da = ds[str(data_var)]
     env_var_converted = convert_env_var_units(env_var_da, target_unit="K")
 
-    # Drop unused vars to save memory
     data_vars_list = [v for v in ds.data_vars]
     if data_var in data_vars_list:
         data_vars_list.remove(data_var)
@@ -529,10 +546,19 @@ def load_env_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0)
 
 
 def serialize_center_points(center_points):
-    """Convert a center_points dict with float32 lat/lon to Python floats so json.dumps() works."""
+    """
+    Serializes cluster centroid coordinates dictionary to a JSON string.
+
+    Converts single-precision floating-point types (`float32`) to native Python floats.
+
+    Args:
+        center_points (dict): Mapping `{label_id_str: (lat_val, lon_val)}`.
+
+    Returns:
+        str: JSON-encoded string representation of cluster center points.
+    """
     casted_dict = {}
     for label_str, (lat_val, lon_val) in center_points.items():
-        # Convert float32 -> float
         casted_dict[label_str] = (float(lat_val), float(lon_val))
     return json.dumps(casted_dict)
 
@@ -541,18 +567,22 @@ def load_individual_detection_files(
     year_input_dir, use_env_filter, y_dim_name, x_dim_name
 ):
     """
-    Load a sequence of detection result NetCDF files.
-    Optimized: Loads coordinates and builds the global grid_info template
-    only once to save memory.
+    Loads a sequence of hourly detection result NetCDF files for a given year.
+
+    Builds spatial grid coordinates and template information once from the first file
+    to save memory across large annual time series.
 
     Args:
-        year_input_dir (str): Directory containing the detection files for a specific year.
-        use_env_filter (bool): Flag indicating whether to load environmental variable regions.
-        y_dim_name (str): Name of the 1D y-dimension (from config).
-        x_dim_name (str): Name of the 1D x-dimension (from config).
+        year_input_dir (str): Directory path containing detection NetCDF files for a year.
+        use_env_filter (bool): If True, loads 2D environmental mask arrays.
+        y_dim_name (str): Variable name of 1D y-dimension.
+        x_dim_name (str): Variable name of 1D x-dimension.
 
     Returns:
         tuple: (detection_results_list, grid_info)
+            - detection_results_list (list of dict): Chronologically sorted dictionaries
+              containing frame timestamp, labeled mask, center points, and environmental regions.
+            - grid_info (dict): Static global spatial grid template.
     """
     detection_results = []
     grid_info = None
@@ -569,24 +599,19 @@ def load_individual_detection_files(
             with xr.open_dataset(filepath, engine="netcdf4") as ds:
                 time_val = ds["time"].values[0]
 
-                # Initialize the grid_info template on the very first file
                 if grid_info is None:
-                    # 1. Load dimensions using exact config names (No more guessing)
                     lat_1d = ds[y_dim_name].values
                     lon_1d = ds[x_dim_name].values
 
-                    # 2. Extract 2D Geographic Coordinates (Always present in our new detection files)
                     lat2d = ds["latitude"].values
                     lon2d = ds["longitude"].values
 
-                    # 3. Build the comprehensive grid template (including area_map)
                     grid_info = build_grid_info(
                         ds, y_dim_name, x_dim_name, lat2d, lon2d
                     )
 
                 final_labeled_regions = ds["final_labeled_regions"].values[0]
 
-                # Reconstruct Center Points
                 center_points_dict = {}
                 if "label_id" in ds:
                     ids = ds["label_id"].values
@@ -602,15 +627,12 @@ def load_individual_detection_files(
                             center_points_dict[lbl_str] = (lbl_lat, lbl_lon)
                 elif "center_points_t0" in ds.attrs:
                     try:
-                        import json
-
                         center_points_dict = json.loads(ds.attrs["center_points_t0"])
                         if isinstance(center_points_dict, str):
                             center_points_dict = json.loads(center_points_dict)
-                    except:
+                    except Exception:
                         center_points_dict = {}
 
-                # Create lightweight dictionary WITHOUT redundant coords
                 detection_result = {
                     "final_labeled_regions": final_labeled_regions,
                     "time": time_val,
@@ -618,12 +640,12 @@ def load_individual_detection_files(
                 }
 
                 if use_env_filter:
-                    if "lifted_index_regions" in ds:
-                        detection_result["lifted_index_regions"] = ds[
-                            "lifted_index_regions"
+                    if "env_var_regions" in ds:
+                        detection_result["env_var_regions"] = ds[
+                            "env_var_regions"
                         ].values[0]
                     else:
-                        detection_result["lifted_index_regions"] = np.zeros_like(
+                        detection_result["env_var_regions"] = np.zeros_like(
                             final_labeled_regions
                         )
 
@@ -637,34 +659,33 @@ def load_individual_detection_files(
     return detection_results, grid_info
 
 
-def save_detection_result(detection_result, output_dir, data_source, grid_info):
+def save_detection_result(
+    detection_result, output_dir, data_source, grid_info, config=None
+):
     """
-    Saves a single timestep's detection results to a compressed, CF-compliant NetCDF file.
+    Saves a single timestep's detection result to a compressed, CF-compliant NetCDF file.
 
-    This function uses the grid_info template to dynamically apply 100% CF-compliant
-    projection metadata while preserving the 2D detection masks and scalar center points.
-
-    The output files are organized into a directory structure: `{output_dir}/YYYY/MM/`.
+    Formats output into `{output_dir}/YYYY/MM/detection_YYYYMMDDTHHMM.nc`. Attaches active
+    configuration parameters (omitting disabled options) and dynamic variable unit metadata.
 
     Args:
-        detection_result (dict): A dictionary containing all detection data for one frame:
-            - "time" (datetime-like): The timestamp for this frame.
-            - "final_labeled_regions" (np.ndarray): 2D array of detected convective objects.
-            - "lifted_index_regions" (np.ndarray): 2D array of the environmental mask.
-            - "center_points" (dict): A mapping `{label_id: (lat, lon)}` for all detected objects.
-        output_dir (str): The root directory where output subfolders will be created.
-        data_source (str): A string describing the input source.
-        grid_info (dict): The verified spatial grid template.
+        detection_result (dict): Detection frame data containing:
+            - 'time': Datetime timestamp.
+            - 'final_labeled_regions': 2D integer array of detected object labels.
+            - 'env_var_regions': 2D binary environmental mask.
+            - 'center_points': Dict mapping label ID string to (lat, lon).
+        output_dir (str): Base root directory where subfolder output tree is created.
+        data_source (str): Text description of input dataset.
+        grid_info (dict): Global verified grid template.
+        config (EmmaConfig, optional): EmmaConfig object used to append active top-level run metadata.
 
     Returns:
         None
     """
     time_raw = detection_result["time"]
     try:
-        # Works for standard times (ERA5, IMERG)
         time_obj = pd.to_datetime(time_raw).round("s")
     except (TypeError, ValueError):
-        # Fallback for cftime objects (CORDEX, CMIP)
         time_obj = time_raw.item() if hasattr(time_raw, "item") else time_raw
 
     year_str = time_obj.strftime("%Y")
@@ -676,13 +697,11 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
     filename = f"detection_{time_obj.strftime('%Y%m%dT%H%M')}.nc"
     output_filepath = os.path.join(structured_dir, filename)
 
-    # 1. Extract dimensions from grid_info (The new way)
     y_dim = grid_info["y_dim_name"]
     x_dim = grid_info["x_dim_name"]
     y_1d = grid_info["lat1d"]
     x_1d = grid_info["lon1d"]
 
-    # 2. Process Center Points (From your old function)
     center_points = detection_result.get("center_points", {})
     if center_points:
         sorted_labels = sorted(center_points.keys(), key=lambda x: int(x))
@@ -700,37 +719,39 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
         label_lats = []
         label_lons = []
 
-    # 3. Extract Grids with time dimension
     final_labeled_regions = np.expand_dims(
         detection_result["final_labeled_regions"], axis=0
     )
-    lifted_index_regions = np.expand_dims(
-        detection_result["lifted_index_regions"], axis=0
-    )
 
-    # 4. Create Dataset structure
+    env_mask = detection_result.get(
+        "env_var_regions",
+        detection_result.get(
+            "env_var_regions", np.zeros_like(detection_result["final_labeled_regions"])
+        ),
+    )
+    env_var_regions = np.expand_dims(env_mask, axis=0)
+
     data_vars = {
         "final_labeled_regions": (["time", y_dim, x_dim], final_labeled_regions),
-        "lifted_index_regions": (["time", y_dim, x_dim], lifted_index_regions),
+        "env_var_regions": (["time", y_dim, x_dim], env_var_regions),
         "label_id": (["labels"], label_ids),
         "label_lat": (["labels"], label_lats),
         "label_lon": (["labels"], label_lons),
     }
 
+    # Explicitly include time as both coordinate and dimension mapping
     ds = xr.Dataset(
         data_vars=data_vars,
         coords={
-            "time": [time_obj],
+            "time": ("time", [pd.Timestamp(time_obj)]),
             y_dim: y_1d,
             x_dim: x_1d,
         },
     )
 
-    # Always add true 2D geographic coordinates from grid_info
     ds["latitude"] = ((y_dim, x_dim), grid_info["lat2d"])
     ds["longitude"] = ((y_dim, x_dim), grid_info["lon2d"])
 
-    # 5. Metadata and Passthrough
     ds.attrs = {
         "title": "EMMA-Tracker Detection Output",
         "institution": "Wegener Center for Climate and Global Change, University of Graz",
@@ -739,15 +760,20 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
         "references": "Kneidinger et al. (2025)",
         "Conventions": "CF-1.7",
         "project": "EMMA",
+        "main_var_units": grid_info.get("main_var_units", "unknown"),
     }
+
+    if grid_info.get("env_var_units") and grid_info["env_var_units"] != "unknown":
+        ds.attrs["env_var_units"] = grid_info["env_var_units"]
+
+    if config and hasattr(config, "get_active_metadata"):
+        for key, val in config.get_active_metadata().items():
+            ds.attrs[key] = val
 
     ds["time"].attrs = {"standard_name": "time"}
     ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
     ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
 
-    # ---------------------------------------------------------
-    # STRICT NCVIEW SANITIZATION
-    # ---------------------------------------------------------
     cf_meta = grid_info.get("cf_metadata", {})
     mapping_name = cf_meta.get("grid_mapping_name", "crs")
 
@@ -761,7 +787,6 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
         ds[x_dim].attrs["units"] = "degrees"
         var_name = "rotated_pole"
 
-        # Hard-force ONLY the exact 3 attributes ncview supports
         ds[var_name] = ([], np.int32(0))
         ds[var_name].attrs = {
             "grid_mapping_name": "rotated_latitude_longitude",
@@ -781,7 +806,7 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
         ds[var_name] = ([], np.int32(0))
         ds[var_name].attrs = {"grid_mapping_name": mapping_name}
 
-    for var in ["final_labeled_regions", "lifted_index_regions"]:
+    for var in ["final_labeled_regions", "env_var_regions"]:
         if var in ds:
             ds[var].attrs["grid_mapping"] = var_name
             ds[var].attrs["coordinates"] = "latitude longitude"
@@ -790,7 +815,7 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
     ds["final_labeled_regions"].attrs.update(
         {"long_name": "Labeled Convective Regions", "units": "1"}
     )
-    ds["lifted_index_regions"].attrs.update(
+    ds["env_var_regions"].attrs.update(
         {"long_name": "Environmental Mask", "units": "1"}
     )
     ds["label_id"].attrs.update({"long_name": "Feature Label IDs"})
@@ -801,44 +826,24 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
 def save_tracking_result(
     tracking_data_for_timestep, output_dir, data_source, grid_info, config=None
 ):
-    """Saves a single timestep's tracking results to a compressed, CF-compliant NetCDF file.
+    """
+    Saves a single timestep's tracking results to a compressed, CF-compliant NetCDF file.
 
-    This function dynamically adapts to any grid projection (Regular, Rotated, Lambert, etc.)
-    using the provided `grid_info` template, ensuring full GIS compatibility.
-    It saves both the 2D segmentation masks (gridded data) and the scalar summary
-    statistics of active tracks (tabular data) in a single file.
-
-    The output files are organized into a directory structure: `{output_dir}/YYYY/MM/`.
+    Stores both 2D segmentation masks (`robust_mcs_id`, `mcs_id`, `mcs_id_merge_split`) and tabular
+    per-frame summary arrays (`active_track_id`, `active_track_lat`, `active_track_lon`, boundary flags).
+    Appends active run metadata and dynamic units to global dataset attributes.
 
     Args:
-        tracking_data_for_timestep (dict): A dictionary containing all tracking data for one frame:
-            - "time" (datetime-like): The timestamp for this frame.
-            - "robust_mcs_id" (np.ndarray): 2D array of Track IDs for mature/robust MCS phases.
-            - "mcs_id" (np.ndarray): 2D array of Track IDs for the full MCS lifecycle.
-            - "mcs_id_merge_split" (np.ndarray): 2D array of Track IDs including merger history.
-            - "tracking_centers" (dict): A mapping `{track_id: (lat, lon)}` for all active tracks.
-        output_dir (str): The root directory where output subfolders will be created.
-        data_source (str): A string describing the input source (e.g., "IMERG + ERA5" or "CERRA").
-        grid_info (dict): The verified spatial grid template (generated via grid_manager.py), containing
-            1D dimensions, 2D coordinates, and CF-compliant projection metadata.
-        config (dict, optional): The run configuration dictionary. If provided, it is
-            serialized into the global attribute 'run_configuration' for provenance.
-
-    Output NetCDF Structure:
-        Dimensions:
-            time: 1 (unlimited)
-            <y_dim_name>: Number of y-axis indices (dynamically named from config)
-            <x_dim_name>: Number of x-axis indices (dynamically named from config)
-            tracks: Number of active tracks in this specific timestep
-
-        Variables:
-            robust_mcs_id (time, y, x): Gridded track IDs (compressed).
-            mcs_id (time, y, x): Gridded track IDs (compressed).
-            mcs_id_merge_split (time, y, x): Gridded track IDs (compressed).
-            active_track_id (tracks): List of IDs present in this file.
-            active_track_lat (tracks): Center latitude for each ID.
-            active_track_lon (tracks): Center longitude for each ID.
-            active_track_touches_boundary (tracks): Flag (0/1) if system touches domain edge.
+        tracking_data_for_timestep (dict): Tracking frame dictionary containing:
+            - 'time': Datetime timestamp.
+            - 'robust_mcs_id': 2D integer array of robust/mature phase track IDs.
+            - 'mcs_id': 2D integer array of main lifecycle track IDs.
+            - 'mcs_id_merge_split': 2D integer array including merger/split family history.
+            - 'tracking_centers': Dict mapping track ID string to (lat, lon) center coordinates.
+        output_dir (str): Root destination directory for structured output.
+        data_source (str): Text string describing source data.
+        grid_info (dict): Global verified grid template.
+        config (EmmaConfig, optional): EmmaConfig object used to append active top-level run metadata.
 
     Returns:
         None
@@ -856,16 +861,13 @@ def save_tracking_result(
     os.makedirs(structured_dir, exist_ok=True)
 
     filename = f"tracking_{time_obj.strftime('%Y%m%dT%H%M')}.nc"
-    
     output_filepath = os.path.join(structured_dir, filename)
 
-    # 1. Extract dimensions from grid_info (The new way)
     y_dim = grid_info["y_dim_name"]
     x_dim = grid_info["x_dim_name"]
     y_1d = grid_info["lat1d"]
     x_1d = grid_info["lon1d"]
 
-    # 2. Process Center Points and Boundary Flags (From your old function)
     centers_dict = tracking_data_for_timestep.get("tracking_centers", {})
     grid = tracking_data_for_timestep["mcs_id"]
     if grid.ndim == 3:
@@ -906,7 +908,6 @@ def save_tracking_result(
         active_lons = []
         active_boundary_flags = np.array([], dtype=np.int8)
 
-    # 3. Extract Grids with time dimension
     robust_mcs_id_arr = np.expand_dims(
         tracking_data_for_timestep["robust_mcs_id"], axis=0
     )
@@ -915,7 +916,6 @@ def save_tracking_result(
         tracking_data_for_timestep["mcs_id_merge_split"], axis=0
     )
 
-    # 4. Create Dataset structure
     data_vars = {
         "robust_mcs_id": (["time", y_dim, x_dim], robust_mcs_id_arr),
         "mcs_id": (["time", y_dim, x_dim], mcs_id_arr),
@@ -935,11 +935,9 @@ def save_tracking_result(
         },
     )
 
-    # Always add true 2D geographic coordinates from grid_info
     ds["latitude"] = ((y_dim, x_dim), grid_info["lat2d"])
     ds["longitude"] = ((y_dim, x_dim), grid_info["lon2d"])
 
-    # 5. Metadata and Passthrough
     ds.attrs = {
         "title": "EMMA-Tracker Output",
         "institution": "Wegener Center for Climate and Global Change, University of Graz",
@@ -947,21 +945,20 @@ def save_tracking_result(
         "history": f"Created on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "Conventions": "CF-1.7",
         "project": "EMMA",
+        "main_var_units": grid_info.get("main_var_units", "unknown"),
     }
 
-    if config:
-        try:
-            ds.attrs["run_configuration"] = json.dumps(config, default=str)
-        except Exception as e:
-            logger.warning(f"Failed to serialize config: {e}")
+    if grid_info.get("env_var_units") and grid_info["env_var_units"] != "unknown":
+        ds.attrs["env_var_units"] = grid_info["env_var_units"]
+
+    if config and hasattr(config, "get_active_metadata"):
+        for key, val in config.get_active_metadata().items():
+            ds.attrs[key] = val
 
     ds["time"].attrs = {"standard_name": "time"}
     ds["latitude"].attrs = {"standard_name": "latitude", "units": "degrees_north"}
     ds["longitude"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
 
-    # ---------------------------------------------------------
-    # STRICT NCVIEW SANITIZATION
-    # ---------------------------------------------------------
     cf_meta = grid_info.get("cf_metadata", {})
     mapping_name = cf_meta.get("grid_mapping_name", "crs")
 
@@ -975,7 +972,6 @@ def save_tracking_result(
         ds[x_dim].attrs["units"] = "degrees"
         var_name = "rotated_pole"
 
-        # Hard-force ONLY the exact 3 attributes ncview supports
         ds[var_name] = ([], np.int32(0))
         ds[var_name].attrs = {
             "grid_mapping_name": "rotated_latitude_longitude",

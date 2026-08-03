@@ -223,73 +223,61 @@ def process_single_timestep(
 
 
 def restore_filtered_files(
-    raw_files: List[str], valid_ids: set, output_dir: str, input_root_dir: str
+    raw_files: List[str],
+    valid_ids: set,
+    output_dir: str,
+    input_root_dir: str,
+    config: object = None,
 ):
     """
     Generates the final NetCDF files containing only valid MCS tracks.
-    Ensures a continuous record by saving empty files for timesteps with no valid tracks.
-
-    Args:
-        raw_files (List[str]): List of paths to raw tracking NetCDF files.
-        valid_ids (set): Set of track IDs that passed the filtering criteria.
-        output_dir (str): Directory where the final NetCDF files will be saved.
-        input_root_dir (str): Root directory of inputs for relative path calculation.
+    Attaches active run metadata to output attributes.
     """
+    active_meta = config.get_active_metadata() if config else {}
+
     for f_path in raw_files:
-        # Calculate output path FIRST to ensure we handle every file
         relative_structure = os.path.relpath(f_path, input_root_dir)
         out_path = os.path.join(output_dir, relative_structure)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
         with xr.open_dataset(f_path, engine="netcdf4") as ds:
-            # --- CASE 1: File has NO tracks initially ---
+            # Attach active metadata top-level global attributes
+            for k, v in active_meta.items():
+                ds.attrs[k] = v
+
             if "active_track_id" not in ds:
-                # Save as-is to maintain continuous record
                 ds.to_netcdf(out_path)
                 continue
 
-            # --- CASE 2: File has tracks, check validity ---
             raw_ids = ds["active_track_id"].values
             all_file_ids = np.atleast_1d(raw_ids)
-
-            # Identify which tracks in THIS file are valid
             valid_tracks_in_file = [tid for tid in all_file_ids if tid in valid_ids]
 
-            # --- CASE 2a: All tracks in file are REJECTED ---
             if not valid_tracks_in_file:
-                # We effectively want an "empty" file (like Case 1).
-                # Drop track-specific variables so the file schema indicates "0 tracks".
                 vars_to_drop = [
                     "active_track_id",
                     "active_track_lat",
                     "active_track_lon",
                     "mcs_id",
                 ]
-                # Drop only the ones that actually exist
                 ds_filtered = ds.drop_vars(
                     [v for v in vars_to_drop if v in ds], errors="ignore"
                 )
 
-                # Zero out the mask
                 if "final_labeled_regions" in ds_filtered:
                     ds_filtered["final_labeled_regions"].values[:] = 0
 
                 ds_filtered.to_netcdf(out_path)
                 continue
 
-            # --- CASE 2b: Some tracks are VALID ---
             track_dims = ds["active_track_id"].dims
-
             if len(track_dims) == 0:
-                # Scalar case (1 track, and it is valid)
                 ds_filtered = ds.copy()
             else:
-                # Array case (Multiple tracks)
                 dim_name = track_dims[0]
                 valid_indices = np.where(np.isin(all_file_ids, valid_tracks_in_file))[0]
                 ds_filtered = ds.isel({dim_name: valid_indices})
 
-            # Update Mask (Set rejected pixels to 0)
             if "final_labeled_regions" in ds_filtered:
                 mask_da = ds_filtered["final_labeled_regions"]
                 mask_vals = mask_da.values
@@ -298,7 +286,6 @@ def restore_filtered_files(
                 )
                 ds_filtered["final_labeled_regions"].values[:] = new_mask
 
-            # Save
             ds_filtered.to_netcdf(out_path)
 
 
@@ -358,9 +345,7 @@ def run_postprocessing_year(
     main_dir = config.main_var_data_directory
 
     all_env = sorted(glob.glob(os.path.join(env_dir, "**", "*.nc"), recursive=True))
-    all_main = sorted(
-        glob.glob(os.path.join(main_dir, "**", "*.nc"), recursive=True)
-    )
+    all_main = sorted(glob.glob(os.path.join(main_dir, "**", "*.nc"), recursive=True))
 
     # Filter files relevant for this year to optimize search
     env_files_year = [f for f in all_env if str(year) in os.path.basename(f)]
