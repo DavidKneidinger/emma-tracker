@@ -8,13 +8,13 @@ from typing import List, Optional
 
 @dataclass
 class DetectionParameters:  # Fixed typo: Paramters -> Parameters
-    use_lifted_index: bool
+    use_env_var: bool
     min_size_threshold: int
-    heavy_precip_threshold: float
-    moderate_precip_threshold: float
+    core_threshold: float
+    envelope_threshold: float
     min_nr_plumes: int
-    lifted_index_percentage_threshold: float
-    lifted_index_threshold: float
+    env_var_percentage_threshold: float
+    env_var_threshold: float
 
 
 @dataclass
@@ -26,7 +26,7 @@ class TrackingParameters:  # Fixed typo: Paramters -> Parameters
 
 @dataclass
 class PostProcessingFilters:
-    lifted_index_threshold: float
+    env_var_threshold: float
     track_straightness_threshold: float
     max_area_volatility: float
 
@@ -37,17 +37,17 @@ class PostProcessingFilters:
 @dataclass
 class EmmaConfig:
     # 1. Paths
-    precip_data_directory: str
-    lifted_index_data_directory: str
+    main_var_data_directory: str
+    env_var_data_directory: str
     detection_output_path: str
     raw_tracking_output_dir: str
     filtered_tracking_output_dir: str
 
     # 2. Variable Names
-    precip_var_name: str
-    lifted_index_var_name: str
-    precip_filename_template: str
-    lifted_index_filename_template: str
+    main_var_name: str
+    env_var_name: str
+    main_var_filename_template: str
+    env_var_filename_template: str
     lat_name: str
     lon_name: str
     data_source: str

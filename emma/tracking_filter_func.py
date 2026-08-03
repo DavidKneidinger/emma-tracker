@@ -114,21 +114,21 @@ def filter_relevant_systems(
     return filtered_mcs_ids_list
 
 
-def apply_li_filter(
+def apply_env_filter(
     mcs_ids_list, 
-    lifted_index_regions_list, 
+    env_var_regions_list, 
     time_list, 
     main_lifetime_thresh_hours,
     dt_hours=1.0,
 ):
     """
-    Post‑filter MCS tracks by lifted_index_regions (0/1).
-    A track passes if any LI==1 occurs within two hours before or at its start,
-    or if LI==1 first appears later and the remaining track length >= main_lifetime_thresh_hours.
+    Post‑filter MCS tracks by env_var_regions (0/1).
+    A track passes if any env_var==1 occurs within two hours before or at its start,
+    or if env_var==1 first appears later and the remaining track length >= main_lifetime_thresh_hours.
 
     Args:
         mcs_ids_list (List[np.ndarray]): List of 2D arrays containing track IDs for each frame.
-        lifted_index_regions_list (List[np.ndarray]): List of 2D binary arrays (1 if convective, 0 otherwise).
+        env_var_regions_list (List[np.ndarray]): List of 2D binary arrays (1 if meeting environmental criteria, 0 otherwise).
         time_list (List[datetime.datetime]): List of timestamps for each frame.
         main_lifetime_thresh_hours (float): Minimum physical duration threshold in hours.
         dt_hours (float, optional): Temporal resolution of input data in hours. Defaults to 1.0.
@@ -156,26 +156,26 @@ def apply_li_filter(
         # Define pre-window (two hours before t0, dynamically scaled by dt_hours)
         window = list(range(max(0, t0 - pre_window_frames), t0 + 1))
 
-        # Check for any convective LI in that window
+        # Check for any environmental filter pass in that window
         found = False
         for ti in window:
             mask = mcs_ids_list[ti] == tid
-            if mask.any() and (lifted_index_regions_list[ti][mask] == 1).any():
+            if mask.any() and (env_var_regions_list[ti][mask] == 1).any():
                 onset = t0
                 found = True
                 break
 
-        # If not found, look for first later LI==1
+        # If not found, look for first later env_var==1
         if not found:
             for ti in times_present:
                 mask = mcs_ids_list[ti] == tid
-                if mask.any() and (lifted_index_regions_list[ti][mask] == 1).any():
+                if mask.any() and (env_var_regions_list[ti][mask] == 1).any():
                     onset = ti
                     found = True
                     break
 
         if not found:
-            # No LI==1 anywhere -> discard entire track
+            # No env_var==1 anywhere -> discard entire track
             continue
 
         # Ensure remaining lifetime >= threshold

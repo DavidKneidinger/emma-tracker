@@ -14,7 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 def build_task_list(
-    precip_dir, precip_template, li_dir=None, li_template=None, years=None, months=None, dt_hours=1.0
+    main_var_dir,
+    main_var_template,
+    env_var_dir=None,
+    env_var_template=None,
+    years=None,
+    months=None,
+    dt_hours=1.0,
 ):
     """
     Scans data directories using filename templates to build a list of processing tasks.
@@ -25,11 +31,11 @@ def build_task_list(
     chunk-agnostic integer indices (time slices) for the multiprocessing workers.
 
     Args:
-        precip_dir (str): Base directory containing precipitation NetCDF files.
-        precip_template (str): Filename naming convention for precipitation files
+        main_var_dir (str): Base directory containing main variable NetCDF files.
+        main_var_template (str): Filename naming convention for main variable files
             (e.g., "cerra_tp_YYYYMMDDTHHMM.nc" or "TOT_PREC_YYYY-YYYY.nc").
-        li_dir (str, optional): Base directory containing lifted index files. Defaults to None.
-        li_template (str, optional): Filename naming convention for LI files. Defaults to None.
+        env_var_dir (str, optional): Base directory containing environmental variable files. Defaults to None.
+        env_var_template (str, optional): Filename naming convention for env files. Defaults to None.
         years (list of int, optional): Specific years to process. Files outside these years
             are filtered out. Defaults to None (process all).
         months (list of int, optional): Specific months to process. Slices outside these
@@ -44,12 +50,12 @@ def build_task_list(
             [
                 {
                     'aligned_time': Timestamp('2000-01-01 00:00:00'),
-                    'precip_file': '/path/to/precip.nc',
-                    'precip_idx': 0,
-                    'precip_raw_time': Timestamp('2000-01-01 00:30:00'),
-                    'li_file': '/path/to/li.nc',
-                    'li_idx': 0,
-                    'li_raw_time': Timestamp('2000-01-01 00:00:00')
+                    'main_var_file': '/path/to/main_var.nc',
+                    'main_var_idx': 0,
+                    'main_var_raw_time': Timestamp('2000-01-01 00:30:00'),
+                    'env_var_file': '/path/to/env_var.nc',
+                    'env_var_idx': 0,
+                    'env_var_raw_time': Timestamp('2000-01-01 00:00:00')
                 },
                 ...
             ]
@@ -142,39 +148,39 @@ def build_task_list(
                 logger.error(f"Failed to scan {filepath} for metadata: {e}")
 
     # Execute Scans for both directories
-    scan_directory(precip_dir, precip_template, "precip")
-    if li_dir and li_template:
-        scan_directory(li_dir, li_template, "li")
+    scan_directory(main_var_dir, main_var_template, "main_var")
+    if env_var_dir and env_var_template:
+        scan_directory(env_var_dir, env_var_template, "env_var")
 
     # Build Final Tasks List by checking for complete pairs
     valid_tasks = []
-    missing_li = 0
-    missing_precip = 0
+    missing_env_var = 0
+    missing_main_var = 0
 
     for t in sorted(tasks_dict.keys()):
         task = tasks_dict[t]
-        has_precip = "precip_file" in task
-        has_li = "li_file" in task
+        has_main_var = "main_var_file" in task
+        has_env_var = "env_var_file" in task
 
-        if li_dir:
+        if env_var_dir:
             # Both files are required for a valid task
-            if has_precip and has_li:
+            if has_main_var and has_env_var:
                 valid_tasks.append(task)
-            elif has_precip:
-                missing_li += 1
-            elif has_li:
-                missing_precip += 1
+            elif has_main_var:
+                missing_env_var += 1
+            elif has_env_var:
+                missing_main_var += 1
         else:
-            # Only Precip is required
-            if has_precip:
-                task["li_file"] = None
-                task["li_idx"] = None
+            # Only main_var is required
+            if has_main_var:
+                task["env_var_file"] = None
+                task["env_var_idx"] = None
                 valid_tasks.append(task)
 
-    if missing_li > 0:
-        logger.warning(f"Found {missing_li} timesteps with Precip but missing LI.")
-    if missing_precip > 0:
-        logger.info(f"Found {missing_precip} timesteps with LI but missing Precip.")
+    if missing_env_var > 0:
+        logger.warning(f"Found {missing_env_var} timesteps with main_var but missing env_var.")
+    if missing_main_var > 0:
+        logger.info(f"Found {missing_main_var} timesteps with env_var but missing main_var.")
 
     logger.info(f"Total valid timesteps identified for processing: {len(valid_tasks)}")
     return valid_tasks
@@ -319,23 +325,23 @@ def setup_logging(output_dir, filename="mcs_tracking.log", mode="a"):
         logger.addHandler(console_handler)
 
 
-def convert_precip_units(prec, target_unit="mm/h"):
+def convert_main_var_units(main_var, target_unit="mm/h"):
     """
-    Convert the precipitation DataArray to the target unit.
+    Convert the main variable DataArray to the target unit if required.
 
-    Recognized unit conversions:
+    Recognized unit conversions for precipitation:
       - 'm', 'meter', 'metre': multiply by 1000 (assumed hourly accumulation)
       - 'kg m-2 s-1': multiply by 3600 (from mm/s to mm/h, given 1 kg/m² = 1 mm water)
       - 'mm', 'mm/h', 'mm/hr': no conversion needed
 
     Parameters:
-    - prec: xarray DataArray of precipitation values.
+    - main_var: xarray DataArray of main variable values.
     - target_unit: Desired unit for the output (default: "mm/h").
 
     Returns:
-    - new_prec: DataArray with converted values and updated units attribute.
+    - new_main_var: DataArray with converted values and updated units attribute.
     """
-    orig_units = prec.attrs.get("units", "").lower()
+    orig_units = main_var.attrs.get("units", "").lower()
 
     if orig_units in ["m", "meter", "metre"]:
         factor = 1000.0
@@ -345,50 +351,50 @@ def convert_precip_units(prec, target_unit="mm/h"):
         factor = 1.0
     else:
         print(
-            f"Warning: Unrecognized precipitation units '{orig_units}'. No conversion applied."
+            f"Warning: Unrecognized main_var units '{orig_units}'. No conversion applied."
         )
         factor = 1.0
 
-    new_prec = prec * factor
-    new_prec.attrs["units"] = target_unit
-    return new_prec
+    new_main_var = main_var * factor
+    new_main_var.attrs["units"] = target_unit
+    return new_main_var
 
 
-def convert_lifted_index_units(li, target_unit="K"):
+def convert_env_var_units(env_var, target_unit="K"):
     """
-    Convert the lifted index DataArray to the target unit.
+    Convert the environmental variable DataArray to the target unit if required.
 
     Recognized unit conversions:
-      - degree Celcius to K
+      - degree Celsius to K
 
     Parameters:
-    - li: xarray DataArray of precipitation values.
+    - env_var: xarray DataArray of environmental variable values.
     - target_unit: Desired unit for the output (default: "K").
 
     Returns:
-    - new_prec: DataArray with converted values and updated units attribute.
+    - new_env_var: DataArray with converted values and updated units attribute.
     """
-    orig_units = li.attrs.get("units", "")
+    orig_units = env_var.attrs.get("units", "")
 
     if orig_units in ["K", "Kelvin"]:
         constant = 0
     elif orig_units in ["°C", "degree_Celcius"]:
-        constant = 0  # Lifted index is a difference measure hence it doesnt matter
+        constant = 0  # Lifted index / temperature difference measures retain offset
     else:
         print(
-            f"Warning: Unrecognized lifted_index units '{orig_units}'. No conversion applied."
+            f"Warning: Unrecognized env_var units '{orig_units}'. No conversion applied."
         )
         constant = 0  # Default to 0 to be safe
 
-    new_li = li + constant
-    new_li.attrs["units"] = target_unit
-    return new_li
+    new_env_var = env_var + constant
+    new_env_var.attrs["units"] = target_unit
+    return new_env_var
 
 
-def load_precipitation_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0):
+def load_main_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0):
     """
-    Load the dataset and select the specified time step, scaling the precipitation
-    variable to units of mm/h for consistency with the detection threshold.
+    Load the dataset and select the specified time step, scaling the main variable
+    to target units for consistency with detection thresholds.
 
     This function implements STRICT grid validation:
     1. It loads the native grid coordinates (1D or 2D) based on y_dim_name/x_dim_name.
@@ -399,7 +405,7 @@ def load_precipitation_data(file_path, data_var, y_dim_name, x_dim_name, time_in
 
     Parameters:
     - file_path: Path to the NetCDF file.
-    - data_var: Name of the precipitation variable.
+    - data_var: Name of the main variable.
     - y_dim_name: Name of the latitude variable (native dimension).
     - x_dim_name: Name of the longitude variable (native dimension).
     - time_index: Index of the time step to select.
@@ -410,7 +416,7 @@ def load_precipitation_data(file_path, data_var, y_dim_name, x_dim_name, time_in
     - lon2d: 2D array of longitudes (True Geographic Coordinates).
     - lat: 1D array of native latitudes (or y-indices).
     - lon: 1D array of native longitudes (or x-indices).
-    - prec: 2D DataArray of precipitation values (scaled to mm/h).
+    - main_var_converted: 2D DataArray of converted main variable values.
     """
     ds = xr.open_dataset(file_path, engine="netcdf4")
     ds = ds.isel(time=time_index)
@@ -448,25 +454,25 @@ def load_precipitation_data(file_path, data_var, y_dim_name, x_dim_name, time_in
     else:
         raise ValueError("Please provide the name of the 1D dimension coordinates.")
 
-    prec = ds[str(data_var)]
-    prec_converted = convert_precip_units(prec)
+    main_var_da = ds[str(data_var)]
+    main_var_converted = convert_main_var_units(main_var_da)
 
-    return ds, lat2d, lon2d, native_y, native_x, prec_converted
+    return ds, lat2d, lon2d, native_y, native_x, main_var_converted
 
 
-def load_lifted_index_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0):
+def load_env_var_data(file_path, data_var, y_dim_name, x_dim_name, time_index=0):
     """
-    Load the dataset and select the specified time step, scaling the lifted_index data
-    variable to units of K for consistency with the detection threshold.
+    Load the dataset and select the specified time step, scaling the environmental
+    variable DataArray to target units for consistency with detection thresholds.
 
-    This function implements STRICT grid validation identical to load_precipitation_data:
+    This function implements STRICT grid validation identical to load_main_var_data:
     1. Loads native coordinates.
     2. Searches for 2D auxiliary coordinates if native coords are 1D.
     3. Raises ValueError if rotated grid implied but 2D coords missing.
 
     Parameters:
     - file_path: Path to the NetCDF file.
-    - data_var: Name of the precipitation variable.
+    - data_var: Name of the environmental variable.
     - y_dim_name: Name of the latitude variable.
     - x_dim_name: Name of the longitude variable.
     - time_index: Index of the time step to select.
@@ -477,7 +483,7 @@ def load_lifted_index_data(file_path, data_var, y_dim_name, x_dim_name, time_ind
     - lon2d: 2D array of longitudes (True Geographic Coordinates).
     - lat: 1D array of native latitudes.
     - lon: 1D array of native longitudes
-    - li_converted: 2D DataArray of lifted index values (scaled to K).
+    - env_var_converted: 2D DataArray of environmental variable values (scaled to K).
     """
     ds = xr.open_dataset(file_path, engine="netcdf4")
     ds = ds.isel(time=time_index)
@@ -510,8 +516,8 @@ def load_lifted_index_data(file_path, data_var, y_dim_name, x_dim_name, time_ind
     else:
         raise ValueError("Please provide the name of the 1D dimension coordinates.")
 
-    li = ds[str(data_var)]
-    li_converted = convert_lifted_index_units(li, target_unit="K")
+    env_var_da = ds[str(data_var)]
+    env_var_converted = convert_env_var_units(env_var_da, target_unit="K")
 
     # Drop unused vars to save memory
     data_vars_list = [v for v in ds.data_vars]
@@ -519,7 +525,7 @@ def load_lifted_index_data(file_path, data_var, y_dim_name, x_dim_name, time_ind
         data_vars_list.remove(data_var)
     ds = ds.drop_vars(data_vars_list, errors="ignore")
 
-    return ds, lat2d, lon2d, native_y, native_x, li_converted
+    return ds, lat2d, lon2d, native_y, native_x, env_var_converted
 
 
 def serialize_center_points(center_points):
@@ -532,7 +538,7 @@ def serialize_center_points(center_points):
 
 
 def load_individual_detection_files(
-    year_input_dir, use_li_filter, y_dim_name, x_dim_name
+    year_input_dir, use_env_filter, y_dim_name, x_dim_name
 ):
     """
     Load a sequence of detection result NetCDF files.
@@ -541,7 +547,7 @@ def load_individual_detection_files(
 
     Args:
         year_input_dir (str): Directory containing the detection files for a specific year.
-        use_li_filter (bool): Flag indicating whether to load Lifted Index regions.
+        use_env_filter (bool): Flag indicating whether to load environmental variable regions.
         y_dim_name (str): Name of the 1D y-dimension (from config).
         x_dim_name (str): Name of the 1D x-dimension (from config).
 
@@ -611,7 +617,7 @@ def load_individual_detection_files(
                     "center_points": center_points_dict,
                 }
 
-                if use_li_filter:
+                if use_env_filter:
                     if "lifted_index_regions" in ds:
                         detection_result["lifted_index_regions"] = ds[
                             "lifted_index_regions"
@@ -644,7 +650,7 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
         detection_result (dict): A dictionary containing all detection data for one frame:
             - "time" (datetime-like): The timestamp for this frame.
             - "final_labeled_regions" (np.ndarray): 2D array of detected convective objects.
-            - "lifted_index_regions" (np.ndarray): 2D array of the lifted index mask.
+            - "lifted_index_regions" (np.ndarray): 2D array of the environmental mask.
             - "center_points" (dict): A mapping `{label_id: (lat, lon)}` for all detected objects.
         output_dir (str): The root directory where output subfolders will be created.
         data_source (str): A string describing the input source.
@@ -785,7 +791,7 @@ def save_detection_result(detection_result, output_dir, data_source, grid_info):
         {"long_name": "Labeled Convective Regions", "units": "1"}
     )
     ds["lifted_index_regions"].attrs.update(
-        {"long_name": "Lifted Index Mask", "units": "1"}
+        {"long_name": "Environmental Mask", "units": "1"}
     )
     ds["label_id"].attrs.update({"long_name": "Feature Label IDs"})
 

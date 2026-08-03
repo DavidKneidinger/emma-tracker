@@ -30,42 +30,42 @@ sys.excepthook = handle_exception
 
 
 def process_file(
-    precip_file_path,
-    precip_data_var,
-    lifted_index_file_path,
-    lifted_index_data_var,
+    main_var_file_path,
+    main_var_data_var,
+    env_var_file_path,
+    env_var_data_var,
     lat_name,
     lon_name,
-    heavy_precip_threshold,
-    lifted_index_threshold,
-    moderate_precip_threshold,
+    core_threshold,
+    env_var_threshold,
+    envelope_threshold,
     min_size_threshold,
     min_nr_plumes,
-    lifted_index_percentage,
+    env_var_percentage,
     grid_info,
-    precip_time_index,
-    li_time_index,
+    main_time_index,
+    env_time_index,
 ):
     """
     Wrapper function to run MCS detection for a single file.
     This is used as the target for parallel processing.
     """
     result = detect_mcs_in_file(
-        precip_file_path,
-        precip_data_var,
-        lifted_index_file_path,
-        lifted_index_data_var,
+        main_var_file_path,
+        main_var_data_var,
+        env_var_file_path,
+        env_var_data_var,
         lat_name,
         lon_name,
-        heavy_precip_threshold,
-        lifted_index_threshold,
-        moderate_precip_threshold,
+        core_threshold,
+        env_var_threshold,
+        envelope_threshold,
         min_size_threshold,
         min_nr_plumes,
-        lifted_index_percentage,
+        env_var_percentage,
         grid_info,
-        precip_time_index=precip_time_index,
-        li_time_index=li_time_index,
+        main_time_index=main_time_index,
+        env_time_index=env_time_index,
     )
     return result
 
@@ -106,20 +106,20 @@ def main():
         sys.exit(1)
 
     # General parameters (Access via cfg object)
-    precip_data_dir = cfg.precip_data_directory
+    main_var_data_dir = cfg.main_var_data_directory
     detection_output_path = cfg.detection_output_path
     raw_tracking_output_dir = cfg.raw_tracking_output_dir
     tracking_output_dir = cfg.filtered_tracking_output_dir
-    precip_template = cfg.precip_filename_template
-    precip_data_var = cfg.precip_var_name
+    main_var_template = cfg.main_var_filename_template
+    main_var_data_var = cfg.main_var_name
     lat_name = cfg.lat_name
     lon_name = cfg.lon_name
     data_source = cfg.data_source
 
-    if cfg.detection_parameters.use_lifted_index:
-        lifted_index_data_var = cfg.lifted_index_var_name
+    if cfg.detection_parameters.use_env_var:
+        env_var_data_var = cfg.env_var_name
     else:
-        lifted_index_data_var = False
+        env_var_data_var = False
 
     # Read optional date filtering parameters ---
     years_to_process = cfg.years
@@ -158,25 +158,25 @@ def main():
     if cfg.detection:
         logger.info("Building task list from directories and templates...")
 
-        li_dir = (
-            cfg.lifted_index_data_directory
-            if cfg.detection_parameters.use_lifted_index
+        env_dir = (
+            cfg.env_var_data_directory
+            if cfg.detection_parameters.use_env_var
             else None
         )
-        li_template = (
-            cfg.lifted_index_filename_template
-            if cfg.detection_parameters.use_lifted_index
+        env_template = (
+            cfg.env_var_filename_template
+            if cfg.detection_parameters.use_env_var
             else None
         )
 
         all_tasks = build_task_list(
-            precip_dir=precip_data_dir,
-            precip_template=precip_template,
-            li_dir=li_dir,
-            li_template=li_template,
+            main_var_dir=main_var_data_dir,
+            main_var_template=main_var_template,
+            env_var_dir=env_dir,
+            env_var_template=env_template,
             years=years_to_process,
             months=months_to_process,
-            dt_hours=cfg.dt_hours
+            dt_hours=cfg.dt_hours,
         )
 
         if not all_tasks:
@@ -262,8 +262,8 @@ def main():
             if global_grid_template is None:
                 first_task = tasks_for_year[0]
                 global_grid_template = verify_and_build_grid_template(
-                    first_precip_file=first_task["precip_file"],
-                    first_li_file=first_task.get("li_file"),
+                    first_main_var_file=first_task["main_var_file"],
+                    first_env_var_file=first_task.get("env_var_file"),
                     y_dim_name=lat_name,
                     x_dim_name=lon_name,
                 )
@@ -279,21 +279,21 @@ def main():
                     futures = [
                         executor.submit(
                             process_file,
-                            task["precip_file"],
-                            precip_data_var,
-                            task.get("li_file"),
-                            lifted_index_data_var,
+                            task["main_var_file"],
+                            main_var_data_var,
+                            task.get("env_var_file"),
+                            env_var_data_var,
                             lat_name,
                             lon_name,
-                            cfg.detection_parameters.heavy_precip_threshold,
-                            cfg.detection_parameters.lifted_index_threshold,
-                            cfg.detection_parameters.moderate_precip_threshold,
+                            cfg.detection_parameters.core_threshold,
+                            cfg.detection_parameters.env_var_threshold,
+                            cfg.detection_parameters.envelope_threshold,
                             cfg.detection_parameters.min_size_threshold,
                             cfg.detection_parameters.min_nr_plumes,
-                            cfg.detection_parameters.lifted_index_percentage_threshold,
+                            cfg.detection_parameters.env_var_percentage_threshold,
                             global_grid_template,
-                            task["precip_idx"],
-                            task.get("li_idx"),
+                            task["main_var_idx"],
+                            task.get("env_var_idx"),
                         )
                         for task in tasks_for_year
                     ]
@@ -311,21 +311,21 @@ def main():
             else:
                 for task in tasks_for_year:
                     detection_result = detect_mcs_in_file(
-                        task["precip_file"],
-                        precip_data_var,
-                        task.get("li_file"),
-                        lifted_index_data_var,
+                        task["main_var_file"],
+                        main_var_data_var,
+                        task.get("env_var_file"),
+                        env_var_data_var,
                         lat_name,
                         lon_name,
-                        cfg.detection_parameters.heavy_precip_threshold,
-                        cfg.detection_parameters.lifted_index_threshold,
-                        cfg.detection_parameters.moderate_precip_threshold,
+                        cfg.detection_parameters.core_threshold,
+                        cfg.detection_parameters.env_var_threshold,
+                        cfg.detection_parameters.envelope_threshold,
                         cfg.detection_parameters.min_size_threshold,
                         cfg.detection_parameters.min_nr_plumes,
-                        cfg.detection_parameters.lifted_index_percentage_threshold,
+                        cfg.detection_parameters.env_var_percentage_threshold,
                         global_grid_template,
-                        precip_time_index=task["precip_idx"],
-                        li_time_index=task.get("li_idx"),
+                        main_time_index=task["main_var_idx"],
+                        env_time_index=task.get("env_var_idx"),
                     )
                     save_detection_result(
                         detection_result,
@@ -351,7 +351,7 @@ def main():
             year_detection_dir = os.path.join(detection_output_path, str(year))
             detection_results, tracking_grid_info = load_individual_detection_files(
                 year_detection_dir,
-                cfg.detection_parameters.use_lifted_index,
+                cfg.detection_parameters.use_env_var,
                 cfg.lat_name,
                 cfg.lon_name,
             )
@@ -405,7 +405,7 @@ def main():
                 # Pass strict values from nested config
                 cfg.tracking_parameters.main_area_thresh,
                 cfg.tracking_parameters.nmaxmerge,
-                use_li_filter=cfg.detection_parameters.use_lifted_index,
+                use_li_filter=cfg.detection_parameters.use_env_var,
                 dt_hours=cfg.dt_hours,
                 main_lifetime_thresh_hours=cfg.tracking_parameters.main_lifetime_thresh_hours
             )
@@ -445,10 +445,10 @@ def main():
             print(f"--- Finished tracking for year: {year} ---")
 
         # --- 3e. POST-PROCESSING PHASE ---
-        if not cfg.detection_parameters.use_lifted_index:
-            print("Skipping postprocessing because of no lifted index...")
+        if not cfg.detection_parameters.use_env_var:
+            print("Skipping postprocessing because of no environmental variable...")
         else:
-            lifted_index_data_var = cfg.lifted_index_var_name
+            env_var_data_var = cfg.env_var_name
 
             if cfg.postprocessing:
 
@@ -467,8 +467,8 @@ def main():
                         year,
                         raw_tracking_output_dir,
                         tracking_output_dir,
-                        precip_data_var,
-                        lifted_index_data_var,
+                        main_var_data_var,
+                        env_var_data_var,
                         lat_name,
                         lon_name,
                         cfg,

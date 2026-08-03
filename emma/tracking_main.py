@@ -3,8 +3,8 @@
 tracking_main.py
 
 Main routine for tracking Mesoscale Convective Systems (MCSs) across multiple timesteps.
-Tracks are assigned via spatial overlap, and a robust filtering based on a lifted index (LI)
-detection (provided in the detection results as 'lifted_index_regions') is applied.
+Tracks are assigned via spatial overlap, and a robust filtering based on an environmental variable
+detection (provided in the detection results as 'env_var_regions' or 'lifted_index_regions') is applied.
 
 The script returns per-timestep tracking arrays, main track IDs, lifetime arrays,
 merging and splitting events, and tracking center positions.
@@ -33,18 +33,19 @@ def track_mcs(
     grid_info,
     main_area_thresh,
     nmaxmerge,
-    use_li_filter,
-    dt_hours,
-    main_lifetime_thresh_hours
+    use_env_filter=True,
+    dt_hours=1.0,
+    main_lifetime_thresh_hours=4,
+    **kwargs,
 ):
     """
     Tracks Mesoscale Convective Systems (MCSs) and filters them based on a combined set of criteria.
 
-    This function first tracks all detected precipitation features over time using spatial overlap,
+    This function first tracks all detected main variable features over time using spatial overlap,
     handling complex merging and splitting events. After the initial tracking, it performs a
     rigorous filtering step to identify "main MCSs". A track qualifies as a main MCS only if it
     contains a continuous period of at least 'main_lifetime_thresh_hours' hours where, simultaneously,
-    its area is greater than 'main_area_thresh' and it is in a convective environment (if 'use_li_filter' is True).
+    its area is greater than 'main_area_thresh' and it meets the environmental criterion (if 'use_env_filter' is True).
 
     The function returns three distinct sets of track IDs representing different levels of filtering,
     from the most restrictive ("in-phase" MCSs) to the most inclusive ("full family tree").
@@ -52,7 +53,7 @@ def track_mcs(
     Args:
         detection_results (List[dict]): A list where each dictionary represents one timestep and contains:
             - "final_labeled_regions" (np.ndarray): 2D array of detected cluster labels.
-            - "lifted_index_regions" (np.ndarray): 2D binary array where 1 indicates a cluster met the LI criterion. Optional, used if 'use_li_filter' is True.
+            - "lifted_index_regions" / "env_var_regions" (np.ndarray): 2D binary array where 1 indicates a cluster met environmental criteria.
             - "center_points" (dict): Mapping of cluster label to its (lat, lon) center. Optional.
             - "time" (datetime.datetime): Timestamp for the data.
             - "lat2d" (np.ndarray): 2D array of latitudes.
@@ -62,24 +63,17 @@ def track_mcs(
         grid_info (dict): dictionary containing the globally verified spatial dimensions and area map.
         main_area_thresh (float): The minimum area (in km²) a track must have to be considered in its mature phase.
         nmaxmerge (int): The maximum number of parent systems to consider in a single merging event.
-        use_li_filter (bool): If True, enables the convective environment check based on the "lifted_index_regions" data.
+        use_env_filter (bool): If True, enables the environmental conditioning check.
         dt_hours (float, optional): Time step resolution in hours (e.g., 0.5 for 30 minutes, 1.0 for 1 hour). Defaults to 1.0.
-        main_lifetime_thresh_hours (int): The minimum number of consecutive hours a track must simultaneously meet the area and LI criteria to be considered a main MCS.
+        main_lifetime_thresh_hours (int): The minimum number of consecutive hours a track must simultaneously meet criteria.
 
     Returns:
-        Tuple: A tuple containing the following organized results:
-            - robust_mcs_id (List[np.ndarray]): The most restrictive output. Contains track IDs only for the timesteps where the system is **simultaneously** larger than 'main_area_thresh' AND meets the convective LI criteria. This isolates the mature, "in-phase" portion of the MCSs.
-            - main_mcs_id (List[np.ndarray]): Shows the **full lifetime** of all tracks that were identified as main MCSs. This includes their formation and dissipation stages where they may not meet the area or LI criteria.
-            - main_mcs_id_merge_split (List[np.ndarray]): The most inclusive output. Shows the **full "family tree"**, containing the full lifetime of main MCSs plus the full lifetime of all smaller systems that merged into or split from them.
-            - lifetime_list (List[np.ndarray]): A list of 2D arrays showing the pixel-wise lifetime (in timesteps) of all tracked clusters.
-            - time_list (List[datetime.datetime]): A list of the timestamps corresponding to each frame.
-            - lat2d (np.ndarray): A 2D array of latitude values.
-            - lon2d (np.ndarray): A 2D array of longitude values.
-            - lat (np.ndarray): A 1D array of latitude values.
-            - lon (np.ndarray): A 1D array of longitude values.
-            - merging_events (List[MergingEvent]): A list of all recorded merging events.
-            - splitting_events (List[SplittingEvent]): A list of all recorded splitting events.
-            - tracking_centers_list (List[dict]): A list of dictionaries, one for each timestep, mapping track IDs to their (lat, lon) center points."""
+        Tuple: A tuple containing the organized tracking results.
+    """
+    # Support backward compatibility for legacy keyword args
+    if "use_li_filter" in kwargs:
+        use_env_filter = kwargs["use_li_filter"]
+
     previous_labeled_regions = None
     previous_cluster_ids = {}
     merge_split_cluster_ids = {}
@@ -106,22 +100,27 @@ def track_mcs(
     robust_flag_dict = {}
     convective_history = defaultdict(dict)
 
-    # Compute min number of frames required for a track to be considered a main MCS based on the lifetime threshold in hours and the time step resolution.
+    # Compute min number of frames required for a track based on lifetime threshold and resolution.
     min_frames = max(1, int(round(main_lifetime_thresh_hours / dt_hours)))
 
-    # Determine if LI filtering is available (only need to check detection_results[0])
-    use_li = use_li_filter and ("lifted_index_regions" in detection_results[0])
+    # Determine if environmental filtering is available
+    use_env = use_env_filter and (
+        "lifted_index_regions" in detection_results[0]
+        or "env_var_regions" in detection_results[0]
+    )
 
     for idx, detection_result in enumerate(detection_results):
         final_labeled_regions = detection_result["final_labeled_regions"]
         center_points_dict = detection_result.get("center_points", {})
         current_time = detection_result["time"]
 
-        # Get LI regions if available.
-        if use_li:
-            li_regions = detection_result["lifted_index_regions"]
+        # Get environmental regions if available.
+        if use_env:
+            env_regions = detection_result.get(
+                "env_var_regions", detection_result.get("lifted_index_regions")
+            )
         else:
-            li_regions = None
+            env_regions = None
 
         # Initialize ID and lifetime arrays for current timestep.
         mcs_id = np.zeros_like(final_labeled_regions, dtype=np.int32)
@@ -158,12 +157,12 @@ def track_mcs(
                 )
                 previous_cluster_ids[label] = assigned_id
                 merge_split_cluster_ids[label] = assigned_id
-                if use_li:
-                    is_convective = np.all(li_regions[cluster_mask] == 1)
+                if use_env:
+                    meets_env = np.all(env_regions[cluster_mask] == 1)
                 else:
-                    is_convective = True
-                robust_flag_dict[assigned_id] = is_convective
-                convective_history[assigned_id][idx] = is_convective
+                    meets_env = True
+                robust_flag_dict[assigned_id] = meets_env
+                convective_history[assigned_id][idx] = meets_env
         else:
             # Subsequent timesteps: check overlaps between previous and current clusters.
             overlap_map = check_overlaps(
@@ -202,8 +201,6 @@ def track_mcs(
 
             for new_lbl, old_ids in overlap_map.items():
                 if len(old_ids) == 0:
-                    # This condition should ideally not be met anymore for labels that were checked,
-                    # but we keep it for robustness.
                     if new_lbl not in labels_no_overlap:
                         labels_no_overlap.append(new_lbl)
                 elif len(old_ids) == 1:
@@ -219,15 +216,15 @@ def track_mcs(
                         grid_area_map_km2=grid_area_map_km2,
                     )
                     temp_assigned[new_lbl] = chosen_id
-                    if use_li:
+                    if use_env:
                         current_mask = final_labeled_regions == new_lbl
-                        current_convective = np.all(li_regions[current_mask] == 1)
+                        current_env_pass = np.all(env_regions[current_mask] == 1)
                     else:
-                        current_convective = True  # sets the criteria to True in case; Makes the later check robust
+                        current_env_pass = True
                     robust_flag_dict[chosen_id] = (
-                        robust_flag_dict.get(chosen_id, False) or current_convective
+                        robust_flag_dict.get(chosen_id, False) or current_env_pass
                     )
-                    convective_history[chosen_id][idx] = current_convective
+                    convective_history[chosen_id][idx] = current_env_pass
                 else:
                     # Merging: handle multiple overlapping previous clusters.
                     chosen_id = handle_merging(
@@ -244,17 +241,18 @@ def track_mcs(
                     mcs_id[mask] = chosen_id
                     lifetime_dict[chosen_id] += 1
                     temp_assigned[new_lbl] = chosen_id
-                    if use_li:
+                    if use_env:
                         current_mask = final_labeled_regions == new_lbl
-                        current_convective = np.all(li_regions[current_mask] == 1)
+                        current_env_pass = np.all(env_regions[current_mask] == 1)
                     else:
-                        current_convective = True
+                        current_env_pass = True
                     robust_flag = (
                         any(robust_flag_dict.get(old_id, False) for old_id in old_ids)
-                        or current_convective
+                        or current_env_pass
                     )
                     robust_flag_dict[chosen_id] = robust_flag
-                    convective_history[chosen_id][idx] = current_convective
+                    convective_history[chosen_id][idx] = current_env_pass
+
             # Handle clusters with no overlap.
             new_assign_map, next_cluster_id = handle_no_overlap(
                 labels_no_overlap,
@@ -267,6 +265,7 @@ def track_mcs(
                 grid_area_map_km2,
             )
             temp_assigned.update(new_assign_map)
+
             # Handle splitting events.
             oldid_to_newlist = defaultdict(list)
             for lbl, tid in temp_assigned.items():
@@ -289,13 +288,11 @@ def track_mcs(
                     )
                     for nl, finalid in splitted_map.items():
                         temp_assigned[nl] = finalid
-                        # Re-evaluate the LI for the child region.
                         current_mask = final_labeled_regions == nl
-                        if use_li:
-                            is_convective = np.all(li_regions[current_mask] == 1)
-                            robust_flag_dict[finalid] = is_convective
+                        if use_env:
+                            is_env_pass = np.all(env_regions[current_mask] == 1)
+                            robust_flag_dict[finalid] = is_env_pass
                         else:
-                            # set all to true because we dont use the lifted index criteria
                             robust_flag_dict[finalid] = True
                         logger.info(
                             f"Track splitting at {current_time} for parent track {old_id}. "
@@ -330,59 +327,47 @@ def track_mcs(
     logger.info("Starting efficient final filtering of tracks...")
 
     # Pass 1: Pre-compute properties for all tracks at each timestep.
-    # This avoids repeatedly scanning the same arrays.
     track_properties_by_time = defaultdict(dict)
     for i, mcs_id_array in enumerate(mcs_ids_list):
-        # Find all unique track IDs present in this single timestep
         unique_ids_in_frame = np.unique(mcs_id_array)
         unique_ids_in_frame = unique_ids_in_frame[unique_ids_in_frame > 0]
 
         for tid in unique_ids_in_frame:
-            # Calculate area once and store it
             mask = mcs_id_array == tid
             area = np.sum(grid_area_map_km2[mask])
 
-            # Get convective status and store it
-            is_convective = convective_history[tid].get(i, False) if use_li else True
+            meets_env = convective_history[tid].get(i, False) if use_env else True
 
-            # Store in our fast lookup dictionary
             track_properties_by_time[tid][i] = {
                 "meets_area": area >= main_area_thresh,
-                "meets_li": is_convective,
+                "meets_env": meets_env,
             }
 
-    # Pass 2: Use the pre-computed data to quickly build boolean series and find main MCSs.
+    # Pass 2: Use pre-computed data to quickly build boolean series and find main MCSs.
     mcs_ids = []
-    # Iterate through every track that ever existed
     for tid in list(lifetime_dict.keys()):
 
-        # Build boolean series for area and LI criteria using fast dictionary lookups
         bool_series_area = []
-        bool_series_li = []
+        bool_series_env = []
 
         for i in range(len(mcs_ids_list)):
             props = track_properties_by_time.get(tid, {}).get(i)
             if props:
-                # If the track exists at this time, check its stored properties
                 bool_series_area.append(props["meets_area"])
-                bool_series_li.append(props["meets_li"])
+                bool_series_env.append(props["meets_env"])
             else:
-                # If the track doesn't exist at this time, it fails the criteria
                 bool_series_area.append(False)
-                bool_series_li.append(False)
+                bool_series_env.append(False)
 
-        # Condition 1: Check if the track has a mature phase (based on area) that meets the lifetime threshold.
+        # Condition 1: Check if mature phase (based on area) meets lifetime threshold.
         if compute_max_consecutive(bool_series_area) >= min_frames:
 
-            # If the first condition is met, we then check the LI condition.
-            # We create a list that is True only at timesteps where BOTH the area and LI criteria were met.
-            li_during_mature_phase_list = [
-                area and li for area, li in zip(bool_series_area, bool_series_li)
+            env_during_mature_phase_list = [
+                area and env for area, env in zip(bool_series_area, bool_series_env)
             ]
 
-            # Condition 2: Check if the LI was met at least once during any part of the mature phase.
-            # If use_li_filter is False, 'bool_series_li' will be all True, so this check will always pass.
-            if any(li_during_mature_phase_list):
+            # Condition 2: Environmental condition met at least once during mature phase.
+            if any(env_during_mature_phase_list):
                 mcs_ids.append(tid)
 
     logger.info(
@@ -405,8 +390,6 @@ def track_mcs(
         unique_ids_in_frame = np.unique(frame_in_phase[frame_in_phase > 0])
 
         for tid in unique_ids_in_frame:
-            # A track is "in-phase" or "robust" at any timestep where it meets the area threshold.
-            # The check for the LI criterion has already been performed for the entire track's mature phase.
             props = track_properties_by_time.get(tid, {}).get(i)
             if not props or not props["meets_area"]:
                 frame_in_phase[frame_in_phase == tid] = 0

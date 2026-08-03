@@ -208,17 +208,17 @@ def build_grid_info(ds, lat_name, lon_name, lat2d, lon2d):
 
 
 def verify_and_build_grid_template(
-    first_precip_file, first_li_file, y_dim_name, x_dim_name
+    first_main_var_file, first_env_var_file, y_dim_name, x_dim_name
 ):
     """
     Performs STRICT initial grid validation by comparing the spatial coordinates
-    of the first Precipitation and Lifted Index files. If they match bit-for-bit,
+    of the first main variable and environmental variable files. If they match bit-for-bit,
     it builds and returns the global grid template containing CF-metadata and
     the exact ellipsoidal area map.
 
     Parameters:
-    - first_precip_file (str): Path to the first precipitation NetCDF file.
-    - first_li_file (str or None): Path to the first lifted index NetCDF file (if used).
+    - first_main_var_file (str): Path to the first main variable NetCDF file.
+    - first_env_var_file (str or None): Path to the first environmental variable NetCDF file (if used).
     - y_dim_name (str): Name of the 1D y-dimension (from config).
     - x_dim_name (str): Name of the 1D x-dimension (from config).
 
@@ -227,22 +227,22 @@ def verify_and_build_grid_template(
     """
     logger.info("Performing STRICT initial grid validation and building template...")
 
-    with xr.open_dataset(first_precip_file, engine="netcdf4") as ds_p:
+    with xr.open_dataset(first_main_var_file, engine="netcdf4") as ds_m:
 
         # --- 1. STRICT DIMENSION CHECK ---
         # Ensure the user provided the actual 1D base dimensions (e.g., 'rlat', 'rlon')
-        if y_dim_name not in ds_p.sizes or x_dim_name not in ds_p.sizes:
+        if y_dim_name not in ds_m.sizes or x_dim_name not in ds_m.sizes:
             msg = (
                 f"CRITICAL ERROR: Configured dimensions '{y_dim_name}' or '{x_dim_name}' "
                 f"are not recognized as base dimensions in the file. "
-                f"Available dimensions are: {list(ds_p.sizes.keys())}"
+                f"Available dimensions are: {list(ds_m.sizes.keys())}"
             )
             logger.critical(msg)
             print(f"\n{msg}\n")  # Force terminal output
             sys.exit(1)
 
         # Double check they are 1D (prevents the meshgrid memory bomb)
-        if ds_p[y_dim_name].ndim != 1 or ds_p[x_dim_name].ndim != 1:
+        if ds_m[y_dim_name].ndim != 1 or ds_m[x_dim_name].ndim != 1:
             msg = (
                 f"CRITICAL ERROR: '{y_dim_name}' and '{x_dim_name}' must be 1D arrays. "
                 f"If you provided 2D 'lat'/'lon', change the config to the underlying 1D dimensions (e.g., 'rlat'/'rlon')."
@@ -252,55 +252,55 @@ def verify_and_build_grid_template(
             sys.exit(1)
 
         # --- 2. SMART 2D COORDINATE SEARCH ---
-        p_lat2d, p_lon2d = None, None
+        m_lat2d, m_lon2d = None, None
 
         for lat_candidate in ["latitude", "lat"]:
-            if lat_candidate in ds_p and ds_p[lat_candidate].ndim == 2:
-                p_lat2d = ds_p[lat_candidate].values
+            if lat_candidate in ds_m and ds_m[lat_candidate].ndim == 2:
+                m_lat2d = ds_m[lat_candidate].values
                 break
 
         for lon_candidate in ["longitude", "lon"]:
-            if lon_candidate in ds_p and ds_p[lon_candidate].ndim == 2:
-                p_lon2d = ds_p[lon_candidate].values
+            if lon_candidate in ds_m and ds_m[lon_candidate].ndim == 2:
+                m_lon2d = ds_m[lon_candidate].values
                 break
 
         # Fallback for regular rectilinear grids (e.g., IMERG)
-        if p_lat2d is None or p_lon2d is None:
+        if m_lat2d is None or m_lon2d is None:
             logger.info(
                 "No explicit 2D latitude/longitude arrays found. Generating from 1D axes via meshgrid."
             )
-            p_lon2d, p_lat2d = np.meshgrid(
-                ds_p[x_dim_name].values, ds_p[y_dim_name].values
+            m_lon2d, m_lat2d = np.meshgrid(
+                ds_m[x_dim_name].values, ds_m[y_dim_name].values
             )
 
-        # --- 3. LI FILE VALIDATION ---
-        if first_li_file:
-            with xr.open_dataset(first_li_file, engine="netcdf4") as ds_l:
+        # --- 3. ENV VAR FILE VALIDATION ---
+        if first_env_var_file:
+            with xr.open_dataset(first_env_var_file, engine="netcdf4") as ds_e:
 
-                l_lat2d, l_lon2d = None, None
+                e_lat2d, e_lon2d = None, None
                 for lat_candidate in ["latitude", "lat"]:
-                    if lat_candidate in ds_l and ds_l[lat_candidate].ndim == 2:
-                        l_lat2d = ds_l[lat_candidate].values
+                    if lat_candidate in ds_e and ds_e[lat_candidate].ndim == 2:
+                        e_lat2d = ds_e[lat_candidate].values
                         break
 
                 for lon_candidate in ["longitude", "lon"]:
-                    if lon_candidate in ds_l and ds_l[lon_candidate].ndim == 2:
-                        l_lon2d = ds_l[lon_candidate].values
+                    if lon_candidate in ds_e and ds_e[lon_candidate].ndim == 2:
+                        e_lon2d = ds_e[lon_candidate].values
                         break
 
-                if l_lat2d is None or l_lon2d is None:
-                    l_lon2d, l_lat2d = np.meshgrid(
-                        ds_l[x_dim_name].values, ds_l[y_dim_name].values
+                if e_lat2d is None or e_lon2d is None:
+                    e_lon2d, e_lat2d = np.meshgrid(
+                        ds_e[x_dim_name].values, ds_e[y_dim_name].values
                     )
 
                 # Tolerance-based spatial coordinate check
                 # equal_nan=True ensures it doesn't fail if the grids have identical NaN masks
-                lat_match = np.allclose(p_lat2d, l_lat2d, atol=1e-4, equal_nan=True)
-                lon_match = np.allclose(p_lon2d, l_lon2d, atol=1e-4, equal_nan=True)
+                lat_match = np.allclose(m_lat2d, e_lat2d, atol=1e-4, equal_nan=True)
+                lon_match = np.allclose(m_lon2d, e_lon2d, atol=1e-4, equal_nan=True)
 
                 if not lat_match or not lon_match:
                     msg = (
-                        "CRITICAL GRID MISMATCH: Precip and LI spatial coordinates differ beyond acceptable precision (1e-4 degrees). "
+                        "CRITICAL GRID MISMATCH: Main var and Env var spatial coordinates differ beyond acceptable precision (1e-4 degrees). "
                         "Ensure both datasets are remapped to the exact same target grid."
                     )
                     logger.critical(msg)
@@ -308,7 +308,7 @@ def verify_and_build_grid_template(
                     sys.exit(1)
         # Build the global template
         global_grid_template = build_grid_info(
-            ds_p, y_dim_name, x_dim_name, p_lat2d, p_lon2d
+            ds_m, y_dim_name, x_dim_name, m_lat2d, m_lon2d
         )
 
     return global_grid_template

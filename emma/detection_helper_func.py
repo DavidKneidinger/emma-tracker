@@ -5,8 +5,8 @@ from scipy.ndimage import binary_dilation, generate_binary_structure, gaussian_f
 from skimage.measure import label as connected_label
 
 
-def smooth_precipitation_field(
-    precipitation: np.ndarray, sigma: float = 1.0
+def smooth_field(
+    main_var: np.ndarray, sigma: float = 1.0
 ) -> np.ndarray:
     """
     Apply a Gaussian filter to smooth a 2D field.
@@ -17,26 +17,26 @@ def smooth_precipitation_field(
     high-frequency artifacts.
 
     Parameters:
-    - precipitation (np.ndarray): 2D array of precipitation values.
+    - main_var (np.ndarray): 2D array of main variable values.
     - sigma (float): The standard deviation for the Gaussian kernel, given in
       units of grid cells. A larger sigma results in more smoothing.
 
     Returns:
-    - np.ndarray: The smoothed precipitation field as a 2D array.
+    - np.ndarray: The smoothed main variable field as a 2D array.
     """
-    return gaussian_filter(precipitation, sigma=sigma, mode="reflect")
+    return gaussian_filter(main_var, sigma=sigma, mode="reflect")
 
 
-def detect_cores_connected(precipitation, core_thresh=10.0, min_cluster_size=3):
-    """Cluster heavy precipitation cores using connected component labeling.
+def detect_cores_connected(main_var, core_thresh=10.0, min_cluster_size=3):
+    """Cluster heavy cores using connected component labeling.
 
-    This function thresholds the precipitation field at the specified core threshold
+    This function thresholds the main variable field at the specified core threshold
     and then identifies contiguous clusters using connected component analysis.
     Any connected component with fewer than `min_cluster_size` pixels is discarded.
 
     Args:
-        precipitation (numpy.ndarray): 2D array representing the precipitation field.
-        core_thresh (float, optional): Threshold for heavy precipitation cores (e.g., mm/h).
+        main_var (numpy.ndarray): 2D array representing the main variable field.
+        core_thresh (float, optional): Threshold for core detection.
             Defaults to 10.0.
         min_cluster_size (int, optional): Minimum number of pixels required for a cluster to be kept.
             Clusters with fewer pixels than this threshold are discarded. Defaults to 3.
@@ -46,12 +46,12 @@ def detect_cores_connected(precipitation, core_thresh=10.0, min_cluster_size=3):
             Pixels not belonging to any cluster are labeled as 0. Detected clusters are assigned
             consecutive positive integers starting at 1.
     """
-    # Create a binary mask where precipitation meets or exceeds the core threshold.
-    core_mask = precipitation >= core_thresh
+    # Create a binary mask where main_var meets or exceeds the core threshold.
+    core_mask = main_var >= core_thresh
 
     # If there are fewer pixels above threshold than the minimum cluster size, return an array of zeros.
     if np.sum(core_mask) < min_cluster_size:
-        return np.zeros_like(precipitation, dtype=int)
+        return np.zeros_like(main_var, dtype=int)
 
     # Label connected components in the binary mask.
     # Use connectivity=2 for 8-connected neighborhood.
@@ -74,18 +74,18 @@ def detect_cores_connected(precipitation, core_thresh=10.0, min_cluster_size=3):
     return final_labels
 
 
-def expand_cores(core_labels, precip, expand_threshold=1.0):
+def expand_cores(core_labels, main_var, expand_threshold=1.0):
     """
-    Groups convective cores into contiguous precipitation systems using a global mask.
+    Groups convective cores into contiguous storm systems using a global mask.
 
-    1) Creates a binary mask of all precipitation >= expand_threshold.
+    1) Creates a binary mask of all main_var >= expand_threshold.
     2) Labels all 8-connected regions in this mask.
     3) Retains only those labeled regions that overlap with at least one heavy core.
 
     Args:
         core_labels (np.ndarray): 2D integer array of heavy cores (labels > 0, background = 0).
-        precip (np.ndarray): 2D precipitation array.
-        expand_threshold (float): Minimum precipitation defining the system envelope.
+        main_var (np.ndarray): 2D main variable array.
+        expand_threshold (float): Minimum threshold defining the system envelope.
 
     Returns:
         np.ndarray: 2D integer array of the full storm systems.
@@ -93,9 +93,9 @@ def expand_cores(core_labels, precip, expand_threshold=1.0):
     """
     logger = logging.getLogger(__name__)
 
-    # 1. Create the global moderate precipitation mask.
+    # 1. Create the global moderate main variable mask.
     # Bitwise OR (|) ensures core pixels are explicitly included even if smoothed below threshold
-    strat_mask = (precip >= expand_threshold) | (core_labels > 0)
+    strat_mask = (main_var >= expand_threshold) | (core_labels > 0)
 
     # 2. Label all 8-connected areas instantly using skimage (consistent with core detection)
     strat_labels = connected_label(strat_mask, connectivity=2)

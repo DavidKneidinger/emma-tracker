@@ -1,16 +1,16 @@
 # config.yaml
 
 # Data
-precip_data_directory: "/input/precip/"
-lifted_index_data_directory: "/input/lifted_index/"
+main_var_data_directory: "/input/main_var/"
+env_var_data_directory: "/input/lifted_index/"
 detection_output_path: "/output/detection/"
 raw_tracking_output_dir: "/output/tracking_raw"
 filtered_tracking_output_dir: "/output/tracking/"
 
-precip_var_name: "precipitation"
-lifted_index_var_name: "LI"
-precip_filename_template: "precip_YYYYMMDDTHHMM.nc"
-lifted_index_filename_template: "lifted_index_YYYYMMDDTHHMM.nc"
+main_var_name: "precipitation"
+env_var_name: "LI"
+main_var_filename_template: "main_YYYYMMDDTHHMM.nc"
+env_var_filename_template: "env_YYYYMMDDTHHMM.nc"
 lat_name: "rlat"  # Name of the 1D y coordinate in the input data
 lon_name: "rlon" # Name of the 1D x coordinate in the input data
 data_source: "Description of your source data"
@@ -24,13 +24,13 @@ months: [5, 6, 7, 8, 9]
 # Detection parameter
 detection: True
 detection_parameters:
-  use_lifted_index: True
+  use_env_var: True
   min_size_threshold: 10  # min number of grid cells for an object to be detected
-  heavy_precip_threshold: 6.8  # mm/h
-  moderate_precip_threshold: 1.0
+  core_threshold: 6.8  # mm/h
+  envelope_threshold: 1.0
   min_nr_plumes: 1  # number of heavy precipitation plums
-  lifted_index_percentage_threshold: 0.1
-  lifted_index_threshold: -2  # K
+  env_var_percentage_threshold: 0.1
+  env_var_threshold: -2  # K
 
 # Tracking parameter
 tracking: True
@@ -43,7 +43,7 @@ tracking_parameters:
 # This section controls the physics-based filtering logic
 postprocessing: True
 postprocessing_filters:
-  lifted_index_threshold: 1.5          # Keep systems with mean LI < 0.0 K
+  env_var_threshold: 1.5          # Keep systems with mean LI < 0.0 K
   track_straightness_threshold: 0.4    # Keep systems with straightness > 0.4
   max_area_volatility: 90000.0        # Keep systems with max volatility < 0.9e5
 

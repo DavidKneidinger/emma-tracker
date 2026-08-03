@@ -138,22 +138,22 @@ def prepare_grid_dict(ds):
     return {"lat_1d": lat_1d, "lon_1d": lon_1d, "lat2d": lat_2d, "lon2d": lon_2d}
 
 
-def calculate_precip_weighted_center(precip_data, mask, lat2d, lon2d):
-    """Calculates the precipitation-weighted center of mass."""
-    precip_in_mask = precip_data[mask]
-    total_precip_weight = np.sum(precip_in_mask)
+def calculate_main_var_weighted_center(main_var_data, mask, lat2d, lon2d):
+    """Calculates the main_var-weighted center of mass."""
+    main_var_in_mask = main_var_data[mask]
+    total_main_var_weight = np.sum(main_var_in_mask)
 
-    if total_precip_weight == 0:
+    if total_main_var_weight == 0:
         return np.nan, np.nan
 
     lats_in_mask = lat2d[mask]
     lons_in_mask = lon2d[mask]
 
-    weighted_lat_sum = np.sum(lats_in_mask * precip_in_mask)
-    weighted_lon_sum = np.sum(lons_in_mask * precip_in_mask)
+    weighted_lat_sum = np.sum(lats_in_mask * main_var_in_mask)
+    weighted_lon_sum = np.sum(lons_in_mask * main_var_in_mask)
 
-    center_lat = weighted_lat_sum / total_precip_weight
-    center_lon = weighted_lon_sum / total_precip_weight
+    center_lat = weighted_lat_sum / total_main_var_weight
+    center_lon = weighted_lon_sum / total_main_var_weight
 
     return center_lat, center_lon
 

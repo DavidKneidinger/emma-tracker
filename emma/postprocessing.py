@@ -5,7 +5,7 @@ Physics-based Filtering and Post-Processing for MCS Tracking.
 
 This module implements the final stage of the tracking pipeline. It refines the 
 raw tracking results by:
-1.  **Extracting** physical properties (Area, Precip, LI) for every track timestep.
+1.  **Extracting** physical properties (Area, Main Var, Env Var) for every track timestep.
 2.  **Aggregating** these properties to calculate lifetime statistics and kinematics.
 3.  **Filtering** tracks based on physics-based thresholds (e.g., instability, straightness, area volatility).
 4.  **Consolidating** results into global CSV files.
@@ -23,7 +23,7 @@ from scipy.stats import skew
 from typing import List
 
 # Import project-specific helpers
-from .input_output import load_lifted_index_data, load_precipitation_data
+from .input_output import load_env_var_data, load_main_var_data
 from .postprocessing_helper_func import (
     prepare_grid_dict,
     calculate_grid_area_map,
@@ -79,11 +79,11 @@ def update_global_csv(new_df: pd.DataFrame, file_path: str, time_col: str, year:
 
 def process_single_timestep(
     file_path: str,
-    li_files: List[str],
-    precip_files: List[str],
+    env_files: List[str],
+    main_files: List[str],
     config: object,
-    precip_var_name: str,
-    lifted_index_var_name: str,
+    main_var_name: str,
+    env_var_name: str,
     lat_name: str,
     lon_name: str,
 ) -> List[dict]:
@@ -92,9 +92,13 @@ def process_single_timestep(
 
     Args:
         file_path (str): Path to the raw tracking NetCDF file.
-        li_files (List[str]): List of available Lifted Index file paths.
-        precip_files (List[str]): List of available Precipitation file paths.
+        env_files (List[str]): List of available Environmental Variable file paths.
+        main_files (List[str]): List of available Main Variable file paths.
         config (object): Configuration object containing variable names and thresholds.
+        main_var_name (str): Variable name of the main tracking field in NetCDF files.
+        env_var_name (str): Variable name of the environmental field in NetCDF files.
+        lat_name (str): Name of the latitude coordinate.
+        lon_name (str): Name of the longitude coordinate.
 
     Returns:
         List[dict]: A list of dictionaries, where each dictionary contains the extracted
@@ -124,37 +128,37 @@ def process_single_timestep(
         # Calculate cell areas (km2) handling Regular vs Irregular grids
         area_map_km2 = calculate_grid_area_map(grid_dict)
 
-       # --- 2. Environmental Data Loading ---
+        # --- 2. Environmental Data Loading ---
         t_pd = pd.to_datetime(time_val)
         time_key_exact = t_pd.strftime("%Y%m%dT%H%M")
         time_key_hour = t_pd.strftime("%Y%m%dT%H")
 
-        # Load Lifted Index (matches exact minute key first, falls back to hour key)
-        li_file = next(
-            (f for f in li_files if time_key_exact in os.path.basename(f)),
-            next((f for f in li_files if time_key_hour in os.path.basename(f)), None),
+        # Load Environmental Variable (matches exact minute key first, falls back to hour key)
+        env_file = next(
+            (f for f in env_files if time_key_exact in os.path.basename(f)),
+            next((f for f in env_files if time_key_hour in os.path.basename(f)), None),
         )
 
-        current_li = None  # Initialize as None
-        if li_file:
-            current_li = load_lifted_index_data(
-                li_file, lifted_index_var_name, lat_name, lon_name
+        current_env_var = None  # Initialize as None
+        if env_file:
+            current_env_var = load_env_var_data(
+                env_file, env_var_name, lat_name, lon_name
             )[-1].squeeze()
 
-        # Load Precipitation (matches exact minute key first, falls back to hour key)
-        precip_file = next(
-            (f for f in precip_files if time_key_exact in os.path.basename(f)),
-            next((f for f in precip_files if time_key_hour in os.path.basename(f)), None),
+        # Load Main Variable (matches exact minute key first, falls back to hour key)
+        main_file = next(
+            (f for f in main_files if time_key_exact in os.path.basename(f)),
+            next((f for f in main_files if time_key_hour in os.path.basename(f)), None),
         )
 
-        current_precip = None
-        if precip_file:
-            current_precip = load_precipitation_data(
-                precip_file, precip_var_name, lat_name, lon_name
+        current_main_var = None
+        if main_file:
+            current_main_var = load_main_var_data(
+                main_file, main_var_name, lat_name, lon_name
             )[-1].squeeze()
 
         # Skip detailed physics if environmental data is missing
-        if current_li is None or current_precip is None:
+        if current_env_var is None or current_main_var is None:
             logger.warning(f"Skipping physics for {time_str} (missing env data)")
             return []
 
@@ -175,28 +179,25 @@ def process_single_timestep(
             track_area = np.sum(area_map_km2[mask])
 
             # Physical Properties
-            mean_li = np.nan
-            if current_li is not None and current_li.shape == mask.shape:
-                mean_li = np.nanmean(current_li.values[mask])
+            mean_env_var = np.nan
+            if current_env_var is not None and current_env_var.shape == mask.shape:
+                mean_env_var = np.nanmean(current_env_var.values[mask])
 
             p_vals = np.array([])
-            if current_precip is not None and current_precip.shape == mask.shape:
-                p_vals = current_precip.values[mask]
+            if current_main_var is not None and current_main_var.shape == mask.shape:
+                p_vals = current_main_var.values[mask]
 
-            mean_precip = np.nanmean(p_vals) if len(p_vals) > 0 else np.nan
-            max_precip = np.nanmax(p_vals) if len(p_vals) > 0 else np.nan
+            mean_main_var = np.nanmean(p_vals) if len(p_vals) > 0 else np.nan
+            max_main_var = np.nanmax(p_vals) if len(p_vals) > 0 else np.nan
 
-            mean_precip = np.nanmean(p_vals)
-            max_precip = np.nanmax(p_vals)
-
-            precip_skew = np.nan
+            main_var_skew = np.nan
 
             if len(p_vals) > 5:
-                precip_skew = skew(p_vals, nan_policy="omit")
+                main_var_skew = skew(p_vals, nan_policy="omit")
 
             # Convective / Stratiform Partitioning
             detection_parameters = config.detection_parameters
-            conv_thresh = detection_parameters.heavy_precip_threshold
+            conv_thresh = detection_parameters.core_threshold
 
             conv_mask = p_vals > conv_thresh
             conv_area = np.sum(area_map_km2[mask][conv_mask])
@@ -209,10 +210,10 @@ def process_single_timestep(
                     "center_lat": center_lat,
                     "center_lon": center_lon,
                     "area_km2": track_area,
-                    "mean_li": mean_li,
-                    "mean_precip": mean_precip,
-                    "max_precip": max_precip,
-                    "precip_skew": precip_skew,
+                    "mean_env_var": mean_env_var,
+                    "mean_main_var": mean_main_var,
+                    "max_main_var": max_main_var,
+                    "main_var_skew": main_var_skew,
                     "convective_area_km2": conv_area,
                     "stratiform_area_km2": strat_area,
                 }
@@ -305,8 +306,8 @@ def run_postprocessing_year(
     year: int,
     raw_tracking_output_dir: str,
     tracking_output_dir: str,
-    precip_data_var: str,
-    lifted_index_data_var: str,
+    main_var_name: str,
+    env_var_name: str,
     lat_name: str,
     lon_name: str,
     config: object,
@@ -325,6 +326,10 @@ def run_postprocessing_year(
         year (int): The year being processed.
         raw_tracking_output_dir (str): Input directory containing raw tracking NetCDFs.
         tracking_output_dir (str): Output directory for the final NetCDFs (e.g., .../2020/).
+        main_var_name (str): Variable name of the main tracking field.
+        env_var_name (str): Variable name of the environmental field.
+        lat_name (str): Name of the latitude coordinate.
+        lon_name (str): Name of the longitude coordinate.
         config (object): Global configuration object.
     """
     logger.info(f"--- Starting Post-Processing for Year: {year} ---")
@@ -348,18 +353,18 @@ def run_postprocessing_year(
     # Ensure yearly output directory exists for NetCDFs
     os.makedirs(tracking_output_dir, exist_ok=True)
 
-    # 2. Locate Environmental Data (LI and Precip)
-    li_dir = config.lifted_index_data_directory
-    precip_dir = config.precip_data_directory
+    # 2. Locate Environmental Data (Env Var and Main Var)
+    env_dir = config.env_var_data_directory
+    main_dir = config.main_var_data_directory
 
-    all_li = sorted(glob.glob(os.path.join(li_dir, "**", "*.nc"), recursive=True))
-    all_precip = sorted(
-        glob.glob(os.path.join(precip_dir, "**", "*.nc"), recursive=True)
+    all_env = sorted(glob.glob(os.path.join(env_dir, "**", "*.nc"), recursive=True))
+    all_main = sorted(
+        glob.glob(os.path.join(main_dir, "**", "*.nc"), recursive=True)
     )
 
     # Filter files relevant for this year to optimize search
-    li_files_year = [f for f in all_li if str(year) in os.path.basename(f)]
-    precip_files_year = [f for f in all_precip if str(year) in os.path.basename(f)]
+    env_files_year = [f for f in all_env if str(year) in os.path.basename(f)]
+    main_files_year = [f for f in all_main if str(year) in os.path.basename(f)]
 
     # --- STEP 1: Extract Timestep Properties ---
     logger.info("STEP 1: Extracting timestep properties...")
@@ -376,13 +381,13 @@ def run_postprocessing_year(
                 executor.submit(
                     process_single_timestep,
                     f,
-                    li_files_year,
-                    precip_files_year,
+                    env_files_year,
+                    main_files_year,
                     config,
-                    precip_data_var,  # Passed from run_postprocessing_year args
-                    lifted_index_data_var,  # Passed from run_postprocessing_year args
-                    lat_name,  # Passed from run_postprocessing_year args
-                    lon_name,  # Passed from run_postprocessing_year args
+                    main_var_name,
+                    env_var_name,
+                    lat_name,
+                    lon_name,
                 ): f
                 for f in raw_files
             }
@@ -396,11 +401,11 @@ def run_postprocessing_year(
         for f in raw_files:
             res = process_single_timestep(
                 f,
-                li_files_year,
-                precip_files_year,
+                env_files_year,
+                main_files_year,
                 config,
-                precip_data_var,
-                lifted_index_data_var,
+                main_var_name,
+                env_var_name,
                 lat_name,
                 lon_name,
             )
@@ -421,12 +426,12 @@ def run_postprocessing_year(
     aggregations = {
         "datetime": ["min", "max", "count"],
         "area_km2": ["mean", "max"],
-        "mean_li": ["mean"],
-        "mean_precip": ["mean"],
-        "max_precip": ["max"],
+        "mean_env_var": ["mean"],
+        "mean_main_var": ["mean"],
+        "max_main_var": ["max"],
         "convective_area_km2": ["mean"],
         "stratiform_area_km2": ["mean"],
-        "precip_skew": ["mean"],
+        "main_var_skew": ["mean"],
     }
 
     # GroupBy & Aggregation
@@ -439,9 +444,9 @@ def run_postprocessing_year(
         "datetime_count": "duration_steps",
         "area_km2_mean": "lifetime_mean_area_km2",
         "area_km2_max": "max_area_km2",
-        "mean_li_mean": "lifetime_mean_LI",
-        "mean_precip_mean": "lifetime_mean_precip",
-        "max_precip_max": "peak_max_precip",
+        "mean_env_var_mean": "lifetime_mean_env_var",
+        "mean_main_var_mean": "lifetime_mean_main_var",
+        "max_main_var_max": "peak_max_main_var",
     }
     df_summary = df_summary.rename(columns=rename_map)
 
@@ -464,17 +469,17 @@ def run_postprocessing_year(
     logger.info("STEP 3: Filtering tracks...")
 
     filters = config.postprocessing_filters
-    thresh_li = filters.lifted_index_threshold
+    thresh_env = filters.env_var_threshold
     thresh_straight = filters.track_straightness_threshold
     thresh_vol = filters.max_area_volatility
 
     logger.info(
-        f"Filtering Criteria: LI < {thresh_li}, Straightness > {thresh_straight}, Volatility < {thresh_vol}"
+        f"Filtering Criteria: Env Var < {thresh_env}, Straightness > {thresh_straight}, Volatility < {thresh_vol}"
     )
 
     # Filter Logic
     accepted_mask = (
-        (df_summary["lifetime_mean_LI"] < thresh_li)
+        (df_summary["lifetime_mean_env_var"] < thresh_env)
         & (df_summary["track_straightness"] > thresh_straight)
         & (df_summary["max_area_volatility"] < thresh_vol)
     )
