@@ -27,6 +27,8 @@ detection_parameters:
   use_env_var: True
   min_size_threshold: 10  # min number of grid cells for an object to be detected
   core_threshold: 6.8  # mm/h
+  main_var_operator: ">="  # ">=" for precip/CAPE, "<=" for Tb/LI
+  env_var_operator: "<="   # "<=" for LI, ">=" for CAPE
   envelope_threshold: 1.0
   min_nr_plumes: 1  # number of heavy precipitation plums
   env_var_percentage_threshold: 0.1
@@ -43,6 +45,7 @@ tracking_parameters:
 # This section controls the physics-based filtering logic
 postprocessing: True
 postprocessing_filters:
+  env_var_operator: "<="          # Comparison operator for environmental check in postprocessing
   env_var_threshold: 1.5          # Keep systems with mean LI < 0.0 K
   track_straightness_threshold: 0.4    # Keep systems with straightness > 0.4
   max_area_volatility: 90000.0        # Keep systems with max volatility < 0.9e5

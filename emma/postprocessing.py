@@ -21,6 +21,7 @@ import pandas as pd
 import xarray as xr
 from scipy.stats import skew
 from typing import List
+import operator
 
 # Import project-specific helpers
 from .input_output import load_env_var_data, load_main_var_data
@@ -32,6 +33,13 @@ from .postprocessing_helper_func import (
 )
 
 logger = logging.getLogger(__name__)
+
+OP_MAP = {
+    ">=": operator.ge,
+    "<=": operator.le,
+    ">": operator.gt,
+    "<": operator.lt,
+}
 
 
 def update_global_csv(new_df: pd.DataFrame, file_path: str, time_col: str, year: int):
@@ -198,8 +206,11 @@ def process_single_timestep(
             # Convective / Stratiform Partitioning
             detection_parameters = config.detection_parameters
             conv_thresh = detection_parameters.core_threshold
+            main_op = getattr(detection_parameters, "main_var_operator", ">=")
 
-            conv_mask = p_vals > conv_thresh
+            conv_op_func = OP_MAP.get(main_op, operator.ge)
+            conv_mask = conv_op_func(p_vals, conv_thresh)
+
             conv_area = np.sum(area_map_km2[mask][conv_mask])
             strat_area = track_area - conv_area
 
@@ -454,17 +465,21 @@ def run_postprocessing_year(
     logger.info("STEP 3: Filtering tracks...")
 
     filters = config.postprocessing_filters
+    env_op = getattr(filters, "env_var_operator", "<=")
     thresh_env = filters.env_var_threshold
     thresh_straight = filters.track_straightness_threshold
     thresh_vol = filters.max_area_volatility
 
     logger.info(
-        f"Filtering Criteria: Env Var < {thresh_env}, Straightness > {thresh_straight}, Volatility < {thresh_vol}"
+        f"Filtering Criteria: Env Var {env_op} {thresh_env}, Straightness > {thresh_straight}, Volatility < {thresh_vol}"
     )
 
     # Filter Logic
+    env_op_func = OP_MAP.get(env_op, operator.le)
+    env_cond = env_op_func(df_summary["lifetime_mean_env_var"], thresh_env)
+
     accepted_mask = (
-        (df_summary["lifetime_mean_env_var"] < thresh_env)
+        env_cond
         & (df_summary["track_straightness"] > thresh_straight)
         & (df_summary["max_area_volatility"] < thresh_vol)
     )

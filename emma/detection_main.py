@@ -27,6 +27,8 @@ def detect_mcs_in_file(
     min_nr_plumes,
     env_var_percentage,
     grid_info,
+    main_var_operator=">=",
+    env_var_operator="<=",
     main_time_index=0,
     env_time_index=0,
 ):
@@ -78,6 +80,7 @@ def detect_mcs_in_file(
         main_var_smooth,
         core_thresh=core_threshold,
         min_cluster_size=4,  # Min number of points in a cluster
+        operator_str=main_var_operator,
     )
 
     # Step 3: Group cores into continuous systems via masking
@@ -85,6 +88,7 @@ def detect_mcs_in_file(
         core_labels,
         main_var_smooth,
         expand_threshold=envelope_threshold,
+        operator_str=main_var_operator,
     )
 
     # Step 4: Filter MCS candidates based on number of core plumes, size, and environmental filter
@@ -117,6 +121,7 @@ def detect_mcs_in_file(
             final_labeled_regions,
             env_var_percentage,
             env_var_threshold=env_var_threshold,
+            operator_str=env_var_operator,
         )
     else:
         env_var_regions = np.zeros_like(final_labeled_regions, dtype=np.uint8)

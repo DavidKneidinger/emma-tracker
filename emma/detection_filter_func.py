@@ -1,23 +1,42 @@
 import numpy as np
+import operator
+
+OP_MAP = {
+    ">=": operator.ge,
+    "<=": operator.le,
+    ">": operator.gt,
+    "<": operator.lt,
+}
 
 
 def environmental_filter(
-    env_var_array, labeled_regions, percentage, env_var_threshold=-2
+    env_var_array,
+    labeled_regions,
+    percentage,
+    env_var_threshold=-2,
+    operator_str="<=",
 ):
     """
     Checks each cluster in labeled_regions and returns a binary array where each grid point
-    is marked 1 if its cluster has at least 'percentage' fraction of points with environmental variable values below the threshold.
+    is marked 1 if its cluster has at least 'percentage' fraction of points meeting the environmental variable criteria.
 
     Parameters:
       env_var_array (numpy.ndarray): 2D float array containing the environmental variable with the same shape as labeled_regions.
       labeled_regions (numpy.ndarray): 2D integer array of cluster labels (0 is background).
-      percentage (float): Fraction of grid points in a cluster that must have environmental variable values below the threshold (default 0.5).
-      env_var_threshold (float): Threshold value for the environmental variable (default -2 K; lower values indicate instability).
+      percentage (float): Fraction of grid points in a cluster that must satisfy the threshold.
+      env_var_threshold (float): Threshold value for the environmental variable.
+      operator_str (str): Threshold comparison operator ('>=', '<=', '>', '<').
 
     Returns:
       final_labeled_regions (numpy.ndarray): 2D binary array (same shape as labeled_regions) with 1 on grid points where
                                               the corresponding cluster passes the environmental criterion, 0 elsewhere.
     """
+    op = OP_MAP.get(operator_str)
+    if op is None:
+        raise ValueError(
+            f"Invalid operator '{operator_str}'. Must be one of {sorted(list(OP_MAP.keys()))}."
+        )
+
     final_labeled_regions = np.zeros_like(labeled_regions)
     unique_labels = list(np.unique(labeled_regions))
     if 0 in unique_labels:
@@ -27,7 +46,7 @@ def environmental_filter(
         cluster_mask = labeled_regions == unique_label
         cluster_vars = env_var_array[cluster_mask]
         total_points = cluster_vars.size
-        convective_points = np.sum(cluster_vars < env_var_threshold)
+        convective_points = np.sum(op(cluster_vars, env_var_threshold))
         if total_points > 0 and convective_points / total_points >= percentage:
             final_labeled_regions[cluster_mask] = 1
     return final_labeled_regions

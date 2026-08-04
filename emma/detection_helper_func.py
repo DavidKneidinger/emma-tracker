@@ -1,8 +1,16 @@
 import numpy as np
 import logging
 from collections import defaultdict
-from scipy.ndimage import binary_dilation, generate_binary_structure, gaussian_filter
+from scipy.ndimage import gaussian_filter
 from skimage.measure import label as connected_label
+import operator
+
+OP_MAP = {
+    ">=": operator.ge,
+    "<=": operator.le,
+    ">": operator.gt,
+    "<": operator.lt,
+}
 
 
 def smooth_field(main_var: np.ndarray, sigma: float = 1.0) -> np.ndarray:
@@ -25,7 +33,9 @@ def smooth_field(main_var: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     return gaussian_filter(main_var, sigma=sigma, mode="reflect")
 
 
-def detect_cores_connected(main_var, core_thresh=10.0, min_cluster_size=3):
+def detect_cores_connected(
+    main_var, core_thresh=10.0, min_cluster_size=3, operator_str=">="
+):
     """Cluster heavy cores using connected component labeling.
 
     This function thresholds the main variable field at the specified core threshold
@@ -38,14 +48,18 @@ def detect_cores_connected(main_var, core_thresh=10.0, min_cluster_size=3):
             Defaults to 10.0.
         min_cluster_size (int, optional): Minimum number of pixels required for a cluster to be kept.
             Clusters with fewer pixels than this threshold are discarded. Defaults to 3.
+        operator_str (str): Threshold comparison operator ('>=' or '<=').
 
     Returns:
         numpy.ndarray: 2D array of integer cluster labels for each grid point.
             Pixels not belonging to any cluster are labeled as 0. Detected clusters are assigned
             consecutive positive integers starting at 1.
     """
-    # Create a binary mask where main_var meets or exceeds the core threshold.
-    core_mask = main_var >= core_thresh
+    op = OP_MAP.get(operator_str)
+    if op is None:
+        raise ValueError(f"Invalid operator '{operator_str}'. Must be '>=' or '<='.")
+
+    core_mask = op(main_var, core_thresh)
 
     # If there are fewer pixels above threshold than the minimum cluster size, return an array of zeros.
     if np.sum(core_mask) < min_cluster_size:
@@ -72,11 +86,11 @@ def detect_cores_connected(main_var, core_thresh=10.0, min_cluster_size=3):
     return final_labels
 
 
-def expand_cores(core_labels, main_var, expand_threshold=1.0):
+def expand_cores(core_labels, main_var, expand_threshold=1.0, operator_str=">="):
     """
     Groups convective cores into contiguous storm systems using a global mask.
 
-    1) Creates a binary mask of all main_var >= expand_threshold.
+    1) Creates a binary mask based on operator_str (e.g. main_var >= expand_threshold or <=).
     2) Labels all 8-connected regions in this mask.
     3) Retains only those labeled regions that overlap with at least one heavy core.
 
@@ -84,6 +98,7 @@ def expand_cores(core_labels, main_var, expand_threshold=1.0):
         core_labels (np.ndarray): 2D integer array of heavy cores (labels > 0, background = 0).
         main_var (np.ndarray): 2D main variable array.
         expand_threshold (float): Minimum threshold defining the system envelope.
+        operator_str (str): Threshold comparison operator ('>=' or '<=').
 
     Returns:
         np.ndarray: 2D integer array of the full storm systems.
@@ -91,9 +106,13 @@ def expand_cores(core_labels, main_var, expand_threshold=1.0):
     """
     logger = logging.getLogger(__name__)
 
-    # 1. Create the global moderate main variable mask.
+    op = OP_MAP.get(operator_str)
+    if op is None:
+        raise ValueError(f"Invalid operator '{operator_str}'. Must be '>=' or '<='.")
+
+    # 1. Create the global moderate main variable mask using the dynamic operator.
     # Bitwise OR (|) ensures core pixels are explicitly included even if smoothed below threshold
-    strat_mask = (main_var >= expand_threshold) | (core_labels > 0)
+    strat_mask = op(main_var, expand_threshold) | (core_labels > 0)
 
     # 2. Label all 8-connected areas instantly using skimage (consistent with core detection)
     strat_labels = connected_label(strat_mask, connectivity=2)

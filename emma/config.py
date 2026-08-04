@@ -3,12 +3,24 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+VALID_OPERATORS = {">=", "<=", ">", "<"}
+
+
+def validate_operator(op_str: str, param_name: str):
+    if op_str not in VALID_OPERATORS:
+        raise ValueError(
+            f"❌ CONFIG ERROR: Invalid '{param_name}' value '{op_str}'. Must be one of {sorted(list(VALID_OPERATORS))}."
+        )
+
+
 # --- NESTED SECTIONS ---
 
 
 @dataclass
 class DetectionParameters:
     use_env_var: bool
+    main_var_operator: str
+    env_var_operator: str
     min_size_threshold: int
     core_threshold: float
     envelope_threshold: float
@@ -26,6 +38,7 @@ class TrackingParameters:
 
 @dataclass
 class PostProcessingFilters:
+    env_var_operator: str
     env_var_threshold: float
     track_straightness_threshold: float
     max_area_volatility: float
@@ -81,13 +94,13 @@ class EmmaConfig:
         use_env = self.detection_parameters.use_env_var
 
         meta = {
-            "data_source": self.data_source,
-            "dt_hours": self.dt_hours,
-            "lat_name": self.lat_name,
-            "lon_name": self.lon_name,
-            "main_var_name": self.main_var_name,
-            "main_var_data_directory": self.main_var_data_directory,
-            "main_var_filename_template": self.main_var_filename_template,
+            "data_source": str(self.data_source),
+            "dt_hours": float(self.dt_hours),
+            "lat_name": str(self.lat_name),
+            "lon_name": str(self.lon_name),
+            "main_var_name": str(self.main_var_name),
+            "main_var_data_directory": str(self.main_var_data_directory),
+            "main_var_filename_template": str(self.main_var_filename_template),
             "use_env_var": int(use_env),
             "detection_enabled": int(self.detection),
             "tracking_enabled": int(self.tracking),
@@ -96,48 +109,59 @@ class EmmaConfig:
 
         # Include environmental paths only if enabled
         if use_env:
-            meta["env_var_name"] = self.env_var_name
-            meta["env_var_data_directory"] = self.env_var_data_directory
-            meta["env_filename_template"] = self.env_filename_template
+            meta["env_var_name"] = str(self.env_var_name)
+            meta["env_var_data_directory"] = str(self.env_var_data_directory)
+            meta["env_var_filename_template"] = str(self.env_var_filename_template)
 
-        # Detection Thresholds
+        # Detection Thresholds & Operators
         if self.detection:
-            meta[
-                "det_min_size_threshold"
-            ] = self.detection_parameters.min_size_threshold
-            meta["det_core_threshold"] = self.detection_parameters.core_threshold
-            meta[
-                "det_envelope_threshold"
-            ] = self.detection_parameters.envelope_threshold
-            meta["det_min_nr_plumes"] = self.detection_parameters.min_nr_plumes
+            meta["det_main_var_operator"] = str(
+                self.detection_parameters.main_var_operator
+            )
+            meta["det_min_size_threshold"] = int(
+                self.detection_parameters.min_size_threshold
+            )
+            meta["det_core_threshold"] = float(self.detection_parameters.core_threshold)
+            meta["det_envelope_threshold"] = float(
+                self.detection_parameters.envelope_threshold
+            )
+            meta["det_min_nr_plumes"] = int(self.detection_parameters.min_nr_plumes)
             if use_env:
-                meta[
-                    "det_env_var_threshold"
-                ] = self.detection_parameters.env_var_threshold
-                meta[
-                    "det_env_var_percentage_threshold"
-                ] = self.detection_parameters.env_var_percentage_threshold
+                meta["det_env_var_operator"] = str(
+                    self.detection_parameters.env_var_operator
+                )
+                meta["det_env_var_threshold"] = float(
+                    self.detection_parameters.env_var_threshold
+                )
+                meta["det_env_var_percentage_threshold"] = float(
+                    self.detection_parameters.env_var_percentage_threshold
+                )
 
         # Tracking Thresholds
         if self.tracking:
-            meta[
-                "track_main_lifetime_thresh_hours"
-            ] = self.tracking_parameters.main_lifetime_thresh_hours
-            meta["track_main_area_thresh"] = self.tracking_parameters.main_area_thresh
-            meta["track_nmaxmerge"] = self.tracking_parameters.nmaxmerge
+            meta["track_main_lifetime_thresh_hours"] = int(
+                self.tracking_parameters.main_lifetime_thresh_hours
+            )
+            meta["track_main_area_thresh"] = float(
+                self.tracking_parameters.main_area_thresh
+            )
+            meta["track_nmaxmerge"] = int(self.tracking_parameters.nmaxmerge)
 
-        # Postprocessing Filters
+        # Postprocessing Filters & Operators
         if self.postprocessing:
-            meta[
-                "pp_track_straightness_threshold"
-            ] = self.postprocessing_filters.track_straightness_threshold
-            meta[
-                "pp_max_area_volatility"
-            ] = self.postprocessing_filters.max_area_volatility
+            meta["pp_track_straightness_threshold"] = float(
+                self.postprocessing_filters.track_straightness_threshold
+            )
+            meta["pp_max_area_volatility"] = float(
+                self.postprocessing_filters.max_area_volatility
+            )
             if use_env:
-                meta[
-                    "pp_env_var_threshold"
-                ] = self.postprocessing_filters.env_var_threshold
+                meta["pp_env_var_operator"] = str(
+                    self.postprocessing_filters.env_var_operator
+                )
+                meta["pp_env_var_threshold"] = float(
+                    self.postprocessing_filters.env_var_threshold
+                )
 
         return meta
 
@@ -163,6 +187,17 @@ class EmmaConfig:
             det_params = pop_section("detection_parameters", DetectionParameters)
             track_params = pop_section("tracking_parameters", TrackingParameters)
             pp_filters = pop_section("postprocessing_filters", PostProcessingFilters)
+
+            # Validate operators
+            validate_operator(
+                det_params.main_var_operator, "detection_parameters.main_var_operator"
+            )
+            validate_operator(
+                det_params.env_var_operator, "detection_parameters.env_var_operator"
+            )
+            validate_operator(
+                pp_filters.env_var_operator, "postprocessing_filters.env_var_operator"
+            )
 
             return cls(
                 detection_parameters=det_params,

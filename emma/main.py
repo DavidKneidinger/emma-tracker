@@ -43,6 +43,8 @@ def process_file(
     min_nr_plumes,
     env_var_percentage,
     grid_info,
+    main_var_operator,
+    env_var_operator,
     main_time_index,
     env_time_index,
 ):
@@ -64,6 +66,8 @@ def process_file(
         min_nr_plumes,
         env_var_percentage,
         grid_info,
+        main_var_operator=main_var_operator,
+        env_var_operator=env_var_operator,
         main_time_index=main_time_index,
         env_time_index=env_time_index,
     )
@@ -294,6 +298,8 @@ def main():
                             cfg.detection_parameters.min_nr_plumes,
                             cfg.detection_parameters.env_var_percentage_threshold,
                             global_grid_template,
+                            cfg.detection_parameters.main_var_operator,
+                            cfg.detection_parameters.env_var_operator,
                             task["main_var_idx"],
                             task.get("env_var_idx"),
                         )
@@ -327,6 +333,8 @@ def main():
                         cfg.detection_parameters.min_nr_plumes,
                         cfg.detection_parameters.env_var_percentage_threshold,
                         global_grid_template,
+                        main_var_operator=cfg.detection_parameters.main_var_operator,
+                        env_var_operator=cfg.detection_parameters.env_var_operator,
                         main_time_index=task["main_var_idx"],
                         env_time_index=task.get("env_var_idx"),
                     )
