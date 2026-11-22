@@ -25,6 +25,7 @@ def detect_mcs_in_file(
     envelope_threshold,
     min_size_threshold,
     min_nr_plumes,
+    gaussian_smoothing_sigma,
     env_var_percentage,
     grid_info,
     main_var_operator=">=",
@@ -47,6 +48,7 @@ def detect_mcs_in_file(
     - envelope_threshold: Threshold for the system envelope.
     - min_size_threshold: Minimum size threshold for clusters (number of grid cells).
     - min_nr_plumes: Minimum number of convective plumes required for MCS candidate.
+    - gaussian_smoothing_sigma: Standard deviation for Gaussian smoothing of the main variable field.
     - env_var_percentage: Percentage of area that needs to fulfill the environmental variable criteria.
     - grid_info: Dictionary containing the globally verified spatial dimensions and area map.
     - main_time_index: Index of the time step to process in main variable file.
@@ -73,13 +75,13 @@ def detect_mcs_in_file(
     env_var_regions = np.ones_like(main_var, dtype=np.int32) * env_var_threshold
 
     # Step 1: Smooth the main variable field
-    main_var_smooth = smooth_field(main_var)
+    main_var_smooth = smooth_field(main_var, sigma=gaussian_smoothing_sigma)
 
     # Step 2: Detect core regions with connected component labeling
     core_labels = detect_cores_connected(
         main_var_smooth,
         core_thresh=core_threshold,
-        min_cluster_size=4,  # Min number of points in a cluster
+        min_cluster_size=1,  # Min number of points in a cluster
         operator_str=main_var_operator,
     )
 

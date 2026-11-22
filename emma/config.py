@@ -25,6 +25,7 @@ class DetectionParameters:
     core_threshold: float
     envelope_threshold: float
     min_nr_plumes: int
+    gaussian_smoothing_sigma: float
     env_var_percentage_threshold: float
     env_var_threshold: float
 
@@ -126,6 +127,7 @@ class EmmaConfig:
                 self.detection_parameters.envelope_threshold
             )
             meta["det_min_nr_plumes"] = int(self.detection_parameters.min_nr_plumes)
+            meta["det_gaussian_smoothing_sigma"] = float(self.detection_parameters.gaussian_smoothing_sigma)
             if use_env:
                 meta["det_env_var_operator"] = str(
                     self.detection_parameters.env_var_operator

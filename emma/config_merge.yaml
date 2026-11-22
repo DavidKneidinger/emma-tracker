@@ -1,0 +1,12 @@
+# config_merge.yaml
+precip_tracking_dir: "/output/tracking_precip/"
+tb_tracking_dir: "/output/tracking_tb/"
+output_dir: "/output/tracking_merged"
+
+precip_var_name: "mcs_id"
+tb_var_name: "mcs_id"
+
+years: [2023, 2024]
+months: [5, 6, 7, 8, 9, 10, 11]
+dt_hours: 0.5
+complevel: 4

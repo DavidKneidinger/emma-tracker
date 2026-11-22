@@ -25,6 +25,26 @@ from emma.grid_manager import build_grid_info
 
 logger = logging.getLogger(__name__)
 
+def sanitize_timestamp(val):
+    """
+    Converts timestamp variants (cftime, numpy.datetime64, datetime, str) to pandas.Timestamp.
+
+    Safely handles non-standard cftime calendar objects (e.g., DatetimeJulian, DatetimeGregorian)
+    by formatting via an ISO 8601 string representation prior to conversion, preventing pandas
+    calendar type errors downstream.
+
+    Args:
+        val (cftime.datetime, np.datetime64, pd.Timestamp, str, datetime.datetime, or 0D array):
+            Raw input timestamp object from dataset or file metadata.
+
+    Returns:
+        pd.Timestamp: Standardized pandas Timestamp object in the standard calendar.
+    """
+    if hasattr(val, "item"):
+        val = val.item()
+    if hasattr(val, "strftime") and not isinstance(val, (pd.Timestamp, datetime.datetime)):
+        return pd.Timestamp(val.strftime("%Y-%m-%d %H:%M:%S"))
+    return pd.Timestamp(val)
 
 def build_task_list(
     main_var_dir,
@@ -123,6 +143,7 @@ def build_task_list(
         )
 
         # --- SAFE SEQUENTIAL XARRAY READ ---
+        # --- SAFE SEQUENTIAL XARRAY READ ---
         for filepath in filtered_files:
             try:
                 with xr.open_dataset(filepath, engine="netcdf4") as ds:
@@ -131,16 +152,13 @@ def build_task_list(
                         continue
 
                     times_raw = ds["time"].values
-                    times_floored = (
-                        ds["time"].dt.floor(f"{int(dt_hours * 60)}min").values
-                    )
 
-                    years_arr = ds["time"].dt.year.values
-                    months_arr = ds["time"].dt.month.values
+                    for idx, t_raw in enumerate(times_raw):
+                        t_std = sanitize_timestamp(t_raw)
+                        aligned_t = t_std.floor(f"{int(dt_hours * 60)}min")
+                        y = t_std.year
+                        m = t_std.month
 
-                    for idx, (t, aligned_t, y, m) in enumerate(
-                        zip(times_raw, times_floored, years_arr, months_arr)
-                    ):
                         if years and y not in years:
                             continue
                         if months and m not in months:
@@ -151,7 +169,7 @@ def build_task_list(
 
                         tasks_dict[aligned_t][f"{file_type}_file"] = filepath
                         tasks_dict[aligned_t][f"{file_type}_idx"] = idx
-                        tasks_dict[aligned_t][f"{file_type}_raw_time"] = t
+                        tasks_dict[aligned_t][f"{file_type}_raw_time"] = t_std
             except Exception as e:
                 logger.error(f"Failed to scan {filepath} for metadata: {e}")
 
@@ -220,6 +238,7 @@ def get_dataset_encoding(ds):
         "zlib": False,
         "dtype": "float64",
         "units": "days since 1950-01-01 00:00:00",
+        "calendar": "proleptic_gregorian",
     }
 
     if "time" in ds:
@@ -349,39 +368,119 @@ def setup_logging(output_dir, filename="mcs_tracking.log", mode="a"):
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
+def olr_to_tb(olr_array: np.ndarray) -> np.ndarray:
+    """
+    Convert OLR (W m^-2) to IR brightness temperature (K) using pyFLEXTRKR
+    formulation (Saunders & Kriebel, 1984; Yang & Slingo, 2001).
+    """
+    a = 1.228
+    b = -1.106e-3
+    sigma = 5.67e-8  # W m^-2 K^-4
+    tf = (np.maximum(olr_array, 0.0) / sigma) ** 0.25
+    tb = (-a + np.sqrt(a**2 + 4 * b * tf)) / (2 * b)
+    return tb
 
-def convert_main_var_units(main_var, target_unit="mm/h"):
+def convert_main_var_units(main_var, target_unit=None):
     """
     Converts primary tracking variable values to standardized target units.
 
-    Recognized conversions for precipitation fields:
+    Automatically detects the physical quantity from `main_var.attrs["units"]`:
+
+    Recognized conversions for precipitation fields (target: "mm/h"):
     - 'm', 'meter', 'metre': Multiplies by 1000.0 (hourly accumulation).
-    - 'kg m-2 s-1': Multiplies by 3600.0 (mm/s to mm/h conversion).
-    - 'mm', 'mm/h', 'mm/hr', 'kg m-2', 'mm h-1': Leaves values unchanged (factor 1.0).
+    - 'kg m-2 s-1', 'mm s-1', 'mm/s', etc.: Multiplies by 3600.0 (mm/s to mm/h).
+    - 'mm', 'mm/h', 'mm/hr', 'kg m-2', 'mm h-1', etc.: Leaves values unchanged.
+
+    Recognized conversions for brightness temperature / OLR fields (target: "K"):
+    - 'K', 'Kelvin': Leaves values unchanged.
+    - '°C', 'degC', 'degree_Celsius', etc.: Adds 273.15.
+    - 'W m-2', 'W/m2', 'W m^-2', etc.: Converts OLR to positive Tb (K) via `olr_to_tb`.
+      Downward-positive (negative) OLR fields are automatically negated first.
 
     Args:
         main_var (xarray.DataArray): DataArray containing primary tracking field.
-        target_unit (str, optional): Desired unit attribute string. Defaults to "mm/h".
+        target_unit (str, optional): Explicit unit attribute override. If None,
+            inferred automatically ("mm/h" for precipitation, "K" for Tb/OLR).
 
     Returns:
         xarray.DataArray: DataArray with converted values and updated `units` attribute.
     """
-    orig_units = main_var.attrs.get("units", "").lower()
+    raw_units = str(main_var.attrs.get("units", "")).strip()
+    orig_units = raw_units.lower()
 
-    if orig_units in ["m", "meter", "metre"]:
-        factor = 1000.0
-    elif orig_units in ["kg m-2 s-1"]:
-        factor = 3600.0
-    elif orig_units in ["mm", "mm/h", "mm/hr", "kg m-2", "mm h-1"]:
-        factor = 1.0
+    precip_m_units = {"m", "meter", "metre"}
+    precip_flux_units = {
+        "kg m-2 s-1",
+        "kg m^-2 s^-1",
+        "kg m**-2 s**-1",
+        "kg/m2/s",
+        "mm s-1",
+        "mm/s",
+    }
+    precip_rate_units = {
+        "mm",
+        "mm/h",
+        "mm/hr",
+        "mm h-1",
+        "mm hr-1",
+        "mm h^-1",
+        "kg m-2",
+        "kg/m2",
+    }
+    tb_k_units = {"k", "kelvin"}
+    tb_c_units = {
+        "°c",
+        "c",
+        "degc",
+        "deg_c",
+        "degree_celsius",
+        "degrees_celsius",
+        "celsius",
+    }
+    olr_units = {"w m-2", "w m^-2", "w m**-2", "w/m2", "w/m^2", "wm-2"}
+
+    if orig_units in precip_m_units:
+        new_main_var = main_var.copy(data=main_var.values * 1000.0)
+        resolved_unit = target_unit or "mm/h"
+    elif orig_units in precip_flux_units:
+        new_main_var = main_var.copy(data=main_var.values * 3600.0)
+        resolved_unit = target_unit or "mm/h"
+    elif orig_units in precip_rate_units:
+        new_main_var = main_var.copy()
+        resolved_unit = target_unit or "mm/h"
+    elif orig_units in tb_k_units:
+        new_main_var = main_var.copy()
+        resolved_unit = target_unit or "K"
+    elif orig_units in tb_c_units:
+        new_main_var = main_var.copy(data=main_var.values + 273.15)
+        resolved_unit = target_unit or "K"
+    elif orig_units in olr_units:
+        olr_vals = np.asarray(main_var.values, dtype=np.float64)
+        positive_attr = str(main_var.attrs.get("positive", "")).strip().lower()
+        finite_vals = olr_vals[np.isfinite(olr_vals)]
+        if positive_attr == "down" or (
+            finite_vals.size > 0 and np.median(finite_vals) < 0.0
+        ):
+            logger.info(
+                "Detected downward-positive (negative) OLR values; negating prior to Tb conversion."
+            )
+            olr_vals = -olr_vals
+        out_dtype = (
+            main_var.dtype
+            if np.issubdtype(main_var.dtype, np.floating)
+            else np.float64
+        )
+        tb_vals = olr_to_tb(olr_vals).astype(out_dtype, copy=False)
+        new_main_var = main_var.copy(data=tb_vals)
+        resolved_unit = target_unit or "K"
     else:
         logger.warning(
-            f"Unrecognized main_var units '{orig_units}'. No scaling applied."
+            f"Unrecognized main_var units '{raw_units}'. No conversion applied."
         )
-        factor = 1.0
+        new_main_var = main_var.copy()
+        resolved_unit = target_unit if target_unit is not None else raw_units
 
-    new_main_var = main_var * factor
-    new_main_var.attrs["units"] = target_unit
+    new_main_var.attrs["units"] = resolved_unit
     return new_main_var
 
 
@@ -597,7 +696,7 @@ def load_individual_detection_files(
     for filepath in filepaths:
         try:
             with xr.open_dataset(filepath, engine="netcdf4") as ds:
-                time_val = ds["time"].values[0]
+                time_val = sanitize_timestamp(ds["time"].values[0])
 
                 if grid_info is None:
                     lat_1d = ds[y_dim_name].values
@@ -683,10 +782,8 @@ def save_detection_result(
         None
     """
     time_raw = detection_result["time"]
-    try:
-        time_obj = pd.to_datetime(time_raw).round("s")
-    except (TypeError, ValueError):
-        time_obj = time_raw.item() if hasattr(time_raw, "item") else time_raw
+    time_raw = detection_result["time"]
+    time_obj = sanitize_timestamp(time_raw).round("s")
 
     year_str = time_obj.strftime("%Y")
     month_str = time_obj.strftime("%m")
@@ -849,10 +946,8 @@ def save_tracking_result(
         None
     """
     time_raw = tracking_data_for_timestep["time"]
-    try:
-        time_obj = pd.to_datetime(time_raw).round("s")
-    except (TypeError, ValueError):
-        time_obj = time_raw.item() if hasattr(time_raw, "item") else time_raw
+    time_raw = tracking_data_for_timestep["time"]
+    time_obj = sanitize_timestamp(time_raw).round("s")
 
     year_str = time_obj.strftime("%Y")
     month_str = time_obj.strftime("%m")

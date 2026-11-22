@@ -2,6 +2,7 @@ import xarray as xr
 import os
 import sys
 
+
 def process_netcdf_file(source_path, dest_path):
     """
     Reads a NetCDF file, modifies its attributes and variables,
@@ -15,24 +16,24 @@ def process_netcdf_file(source_path, dest_path):
         # Open the dataset using a 'with' statement to ensure it's properly closed.
         with xr.open_dataset(source_path) as ds:
             # --- Modification 1: Change global attribute 'Units' to 'units' ---
-            if 'Units' in ds.attrs:
-                ds.attrs['units'] = ds.attrs.pop('Units')
+            if "Units" in ds.attrs:
+                ds.attrs["units"] = ds.attrs.pop("Units")
 
             # --- Modification 2: Update attributes for the 'LI' variable ---
             # Check if the 'LI' variable exists before modifying it.
-            if 'LI' in ds.variables:
+            if "LI" in ds.variables:
                 # Set the units attribute specifically to 'K'.
-                ds['LI'].attrs['units'] = 'K'
+                ds["LI"].attrs["units"] = "K"
                 # Remove the 'coordinates' attribute as 'expver' and 'number' will be dropped.
-                if 'coordinates' in ds['LI'].attrs:
-                    del ds['LI'].attrs['coordinates']
+                if "coordinates" in ds["LI"].attrs:
+                    del ds["LI"].attrs["coordinates"]
 
             # --- Modification 3: Drop the 'expver' and 'number' coordinates/variables ---
             # This will remove them if they exist as coordinates or data variables.
             # The 'errors="ignore"' argument prevents an error if they don't exist in a file.
-            vars_to_drop = ['expver', 'number']
-            #ds_modified = ds.drop_vars(vars_to_drop, errors='ignore')
-            ds_modified = ds.drop(['number', 'expver'])
+            vars_to_drop = ["expver", "number"]
+            # ds_modified = ds.drop_vars(vars_to_drop, errors='ignore')
+            ds_modified = ds.drop(["number", "expver"])
             # --- Saving the file ---
             # Get the directory part of the destination path.
             dest_folder = os.path.dirname(dest_path)
@@ -42,11 +43,12 @@ def process_netcdf_file(source_path, dest_path):
 
             # Save the modified dataset to the new file path.
             ds_modified.to_netcdf(dest_path)
-            #print(f"Successfully processed: {source_path} -> {dest_path}")
+            # print(f"Successfully processed: {source_path} -> {dest_path}")
 
     except Exception as e:
         # If any error occurs during the process, print an error message.
         print(f"ERROR processing file {source_path}: {e}", file=sys.stderr)
+
 
 def main():
     """
@@ -54,8 +56,8 @@ def main():
     """
     # --- Configuration ---
     # Define the source and destination root directories.
-    source_dir = '/reloclim/dkn/data/ERA5/lifting_index_old'
-    dest_dir = '/reloclim/dkn/data/ERA5/lifting_index'
+    source_dir = "/reloclim/dkn/data/ERA5/lifting_index_old"
+    dest_dir = "/reloclim/dkn/data/ERA5/lifting_index"
 
     print(f"Starting NetCDF file processing.")
     print(f"Source: {source_dir}")
@@ -67,7 +69,7 @@ def main():
     for root, dirs, files in os.walk(source_dir):
         for filename in files:
             # Process only files that end with the .nc extension.
-            if filename.endswith('.nc'):
+            if filename.endswith(".nc"):
                 # Construct the full path to the source file.
                 source_path = os.path.join(root, filename)
 
@@ -83,6 +85,7 @@ def main():
 
     print("-" * 30)
     print("Processing complete.")
+
 
 if __name__ == "__main__":
     # This ensures the main() function is called only when the script is executed directly.

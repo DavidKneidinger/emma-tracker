@@ -166,7 +166,7 @@ def track_mcs(
                 previous_labeled_regions,
                 final_labeled_regions,
                 previous_cluster_ids,
-                overlap_threshold=10,
+                overlap_threshold=20,
             )
             temp_assigned = {}
             labels_no_overlap = [
@@ -185,7 +185,7 @@ def track_mcs(
                     previous_cluster_ids,
                     clean_overlap_map,  # Pass the clean map
                     grid_area_map_km2,
-                    overlap_threshold=10,
+                    overlap_threshold=20,
                 )
 
                 if rescued_overlaps:

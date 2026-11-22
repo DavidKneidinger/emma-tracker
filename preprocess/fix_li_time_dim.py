@@ -3,10 +3,15 @@ from pathlib import Path
 
 # --- CONFIGURATION ---
 LI_FILE = "/reloclim/dkn/data/ERA5/lifted_index_remap_yearly/li_mjjas_YYYY.nc"
-PRECIP_FILE = "/reloclim/dkn/data/IMERG/imerg_accum/IMERG_Hourly_Accumulation_May-Sep_YYYY.nc"
-OUTPUT_FILE = "/reloclim/dkn/data/ERA5/lifted_index_remap_yearly/li_mjjas_YYYY_TIMEFIXED.nc"
+PRECIP_FILE = (
+    "/reloclim/dkn/data/IMERG/imerg_accum/IMERG_Hourly_Accumulation_May-Sep_YYYY.nc"
+)
+OUTPUT_FILE = (
+    "/reloclim/dkn/data/ERA5/lifted_index_remap_yearly/li_mjjas_YYYY_TIMEFIXED.nc"
+)
 
-years = range(2025, 2026)  
+years = range(2025, 2026)
+
 
 def main():
     print("⏳ Loading datasets...")
@@ -32,19 +37,20 @@ def main():
 
         print("\n🔧 Injecting identical time coordinates from Precip into LI...")
         # .values extracts the raw datetime64 array, bypassing any coordinate conflicts
-        ds_l['time'] = ds_p.time.values
+        ds_l["time"] = ds_p.time.values
 
         # Clean up the metadata so it doesn't say "days" anymore
-        ds_l['time'].attrs = ds_p['time'].attrs
+        ds_l["time"].attrs = ds_p["time"].attrs
 
         print(f"💾 Saving fixed file to: {output_file}")
         # Re-apply compression
-        encoding = {var: {'zlib': True, 'complevel': 4} for var in ds_l.data_vars}
+        encoding = {var: {"zlib": True, "complevel": 4} for var in ds_l.data_vars}
         ds_l.to_netcdf(output_file, encoding=encoding)
-        
+
         ds_l.close()
         ds_p.close()
         print(f"\n✅ Done! Point your tracker to {output_file}")
+
 
 if __name__ == "__main__":
     main()

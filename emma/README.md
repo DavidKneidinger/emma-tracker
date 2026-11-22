@@ -54,6 +54,7 @@ The algorithm is controlled by a single YAML file. Below is a detailed explanati
 | `envelope_threshold` | `2.0` | Threshold defining system expansion / envelope extent (e.g., mm/h or K). |
 | `min_size_threshold` | `10` | Minimum size (in grid cells) required for a candidate system. |
 | `min_nr_plumes` | `1` | Minimum number of core intensity plumes required within an envelope. |
+| `gaussian_smoothing_sigma` | `1.0` | Standard deviation for Gaussian smoothing of the main variable field; 0 for no smoothing. |
 | `env_var_threshold` | `-2.0` | Threshold for environmental conditioning (e.g., LI < -2 K for instability). |
 | `env_var_percentage_threshold` | `0.1` | Fraction of system area (0.0 to 1.0) that must meet the environmental threshold. |
 

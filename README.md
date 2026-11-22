@@ -93,6 +93,7 @@ detection_parameters:
   heavy_precip_threshold: 6.8  # mm/h use 99th percentile of precip product
   moderate_precip_threshold: 1.0
   min_nr_plumes: 1  # number of heavy precipitation plums
+  gaussian_smoothing_sigma: 1.0  # Standard deviation for Gaussian smoothing of the main variable field; 0 for no smoothing
   lifted_index_percentage_threshold: 0.1
   lifted_index_threshold: -2  # K
 
